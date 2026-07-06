@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus';
 
 // ==================== 配置 axios 实例 ====================
 // ⚠️ 在此处填写后端 API 的 baseURL
-const API_BASE_URL = 'http://localhost:8080/dify/api';
+const API_BASE_URL = 'http://localhost:8080/';
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,

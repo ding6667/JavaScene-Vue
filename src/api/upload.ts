@@ -34,6 +34,6 @@ export async function uploadZip(
 // ⚠️ 后端接口：POST /grading/start
 // 参数 uploadId 来自 uploadZip 的响应
 export async function startGrading(uploadId: string): Promise<ApiResponse<void>> {
-  const response = await axiosInstance.post<ApiResponse<void>>('/marking/start', { uploadId });
+  const response = await axiosInstance.post<ApiResponse<void>>('/marking/startProject', { uploadId });
   return response.data;
 }

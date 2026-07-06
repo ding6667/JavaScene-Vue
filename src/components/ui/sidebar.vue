@@ -7,6 +7,7 @@ import {
   GraduationCap,
   History,
   Home,
+  Upload,
 } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -16,6 +17,7 @@ const isCollapsed = ref(false);
 const navItems = [
   { path: '/', icon: Home, label: '作业批阅', exact: true },
   { path: '/results', icon: FileClock, label: '批阅结果' },
+  { path: '/upload-files', icon: Upload, label: '上传管理' },
   { path: '/history', icon: History, label: '历史任务' },
 ];
 
