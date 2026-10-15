@@ -3,8 +3,15 @@ import { ref, reactive, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Download, Delete, RefreshCw, Search } from 'lucide-vue-next';
 import { useUploadFileStore } from '@/stores/uploadFile';
+import { uploadFile } from '@/api/upload';
+import { startProject, startCommon } from '@/api/grading';
+import { getClassRecords } from '@/api/class';
+import { getStandards } from '@/api/standard';
 import { formatFileSize } from '@/utils/format';
-import type { UploadFileRecord } from '@/types/uploadFile';
+import type { UploadFileRecord, UploadFileType } from '@/types/uploadFile';
+import type { ClassRecord } from '@/types/class';
+import type { StandardConfig } from '@/types/standard';
+import type { TaskCategory } from '@/types';
 
 const store = useUploadFileStore();
 
@@ -13,6 +20,7 @@ const queryParams = reactive({
   pageSize: 10,
   fileName: '',
   isAsc: false,
+  fileType: undefined as UploadFileType | undefined,
 });
 
 const selectedIds = ref<string[]>([]);
@@ -25,30 +33,28 @@ function handleFileSelect(e: Event) {
   const target = e.target as HTMLInputElement;
   const file = target.files?.[0];
   if (file) {
-    uploadFile(file);
+    handleUpload(file);
   }
   target.value = '';
 }
 
-async function uploadFile(file: File) {
-  uploading.value = true;
-  const formData = new FormData();
-  formData.append('file', file);
+// 根据文件后缀判断 fileType（ZIP / WORD）
+function detectFileType(fileName: string): UploadFileType | undefined {
+  if (/\.zip$/i.test(fileName)) return 'ZIP';
+  if (/\.(docx|doc)$/i.test(fileName)) return 'WORD';
+  return undefined;
+}
 
+// 上传文件：仅调用上传接口，不批阅
+async function handleUpload(file: File) {
+  uploading.value = true;
   try {
-    const response = await fetch('/api/upload/zip', {
-      method: 'POST',
-      body: formData,
-    });
-    const result = await response.json();
-    if (result.code === 0 || result.code === 200) {
-      ElMessage.success('上传成功');
-      refreshList();
-    } else {
-      ElMessage.error(result.message || '上传失败');
-    }
-  } catch (e) {
-    ElMessage.error('上传失败：' + (e as Error).message);
+    // 统一走 /api/upload/file，根据后缀传 fileType
+    await uploadFile(file, undefined, detectFileType(file.name));
+    ElMessage.success('上传成功');
+    refreshList();
+  } catch {
+    // 错误由响应拦截器统一渲染后端 message
   } finally {
     uploading.value = false;
   }
@@ -86,9 +92,8 @@ async function handleDownload(row: UploadFileRecord) {
   const success = await store.downloadFile(row.id, row.fileName);
   if (success) {
     ElMessage.success('下载成功');
-  } else {
-    ElMessage.error('下载失败');
   }
+  // 失败时错误提示由响应拦截器统一渲染后端 message
 }
 
 async function handleDelete(row: UploadFileRecord) {
@@ -104,9 +109,8 @@ async function handleDelete(row: UploadFileRecord) {
   if (success) {
     ElMessage.success('删除成功');
     refreshList();
-  } else {
-    ElMessage.error('删除失败');
   }
+  // 失败时错误提示由响应拦截器统一渲染后端 message
 }
 
 async function handleBatchDelete() {
@@ -128,17 +132,114 @@ async function handleBatchDelete() {
     ElMessage.success('批量删除成功');
     selectedIds.value = [];
     refreshList();
-  } else {
-    ElMessage.error('批量删除失败');
   }
+  // 失败时错误提示由响应拦截器统一渲染后端 message
 }
 
 function triggerUpload() {
   fileInput.value?.click();
 }
 
+// ==================== 文件类型判断 ====================
+function isZip(fileName: string): boolean {
+  return /\.zip$/i.test(fileName);
+}
+
+function isWord(fileName: string): boolean {
+  return /\.(docx|doc)$/i.test(fileName);
+}
+
+// ==================== 批阅功能 ====================
+const gradeDialogVisible = ref(false);
+const currentRow = ref<UploadFileRecord | null>(null);
+const gradeSubmitting = ref(false);
+const classList = ref<ClassRecord[]>([]);
+const standardList = ref<StandardConfig[]>([]);
+
+const gradeForm = reactive({
+  classId: '',
+  standardConfigId: undefined as number | undefined,
+  taskCategory: undefined as TaskCategory | undefined,
+  taskSequence: undefined as number | undefined,
+});
+
+async function loadOptions() {
+  try {
+    const [classRes, stdRes] = await Promise.all([
+      getClassRecords({ pageNum: 1, pageSize: 200, isAsc: true }),
+      getStandards(),
+    ]);
+    classList.value = classRes.data.records || [];
+    standardList.value = (stdRes.data || []).filter((s) => s.id !== undefined);
+  } catch {
+    // 错误由拦截器统一提示
+  }
+}
+
+function handleGrade(row: UploadFileRecord) {
+  if (!isZip(row.fileName) && !isWord(row.fileName)) {
+    ElMessage.error('仅支持对 .zip 或 .doc/.docx 文件进行批阅');
+    return;
+  }
+  currentRow.value = row;
+  gradeForm.classId = '';
+  gradeForm.standardConfigId = undefined;
+  gradeForm.taskCategory = undefined;
+  gradeForm.taskSequence = undefined;
+  gradeDialogVisible.value = true;
+}
+
+function validateGradeForm(): boolean {
+  if (!gradeForm.classId) {
+    ElMessage.warning('请选择班级');
+    return false;
+  }
+  if (gradeForm.standardConfigId === undefined) {
+    ElMessage.warning('请选择评分模板');
+    return false;
+  }
+  if (!gradeForm.taskCategory) {
+    ElMessage.warning('请选择任务类别');
+    return false;
+  }
+  if (gradeForm.taskSequence === undefined || gradeForm.taskSequence < 1) {
+    ElMessage.warning('请填写任务频率');
+    return false;
+  }
+  return true;
+}
+
+async function handleGradeSubmit() {
+  if (!currentRow.value || !validateGradeForm()) return;
+
+  gradeSubmitting.value = true;
+  try {
+    const params = {
+      classId: gradeForm.classId,
+      standardConfigId: gradeForm.standardConfigId!,
+      taskCategory: gradeForm.taskCategory!,
+      taskSequence: gradeForm.taskSequence!,
+    };
+
+    // 根据文件类型调用对应批阅接口
+    if (isZip(currentRow.value.fileName)) {
+      await startProject({ ...params, uploadId: currentRow.value.id });
+    } else {
+      await startCommon({ ...params, uploadIds: [currentRow.value.id] });
+    }
+
+    ElMessage.success('批阅已启动');
+    gradeDialogVisible.value = false;
+  } catch {
+    // 错误由响应拦截器统一渲染后端 message
+  } finally {
+    gradeSubmitting.value = false;
+  }
+}
+
 onMounted(() => {
   refreshList();
+  loadOptions();
 });
 </script>
 
@@ -147,7 +248,7 @@ onMounted(() => {
     <header class="page-header">
       <div class="header-content">
         <h1 class="page-title">上传文件管理</h1>
-        <p class="page-subtitle">查看和管理已上传的作业压缩包</p>
+        <p class="page-subtitle">管理已上传的作业文件，可对单个文件发起批阅</p>
       </div>
     </header>
 
@@ -176,6 +277,16 @@ onMounted(() => {
             {{ queryParams.isAsc ? '升序' : '降序' }}
           </span>
         </button>
+        <el-select
+          v-model="queryParams.fileType"
+          placeholder="文件类型"
+          clearable
+          class="filter-select"
+          @change="handleSearch"
+        >
+          <el-option label="ZIP" value="ZIP" />
+          <el-option label="Word" value="WORD" />
+        </el-select>
       </div>
       <div class="toolbar-right">
         <button
@@ -185,13 +296,13 @@ onMounted(() => {
         >
           <Delete :size="14" /> 批量删除{{ selectedIds.length > 0 ? `(${selectedIds.length})` : '' }}
         </button>
-        <button class="btn btn-success" @click="triggerUpload">
-          上传文件
+        <button class="btn btn-success" :disabled="uploading" @click="triggerUpload">
+          {{ uploading ? '上传中...' : '上传文件' }}
         </button>
         <input
           ref="fileInput"
           type="file"
-          accept=".zip"
+          accept=".zip,.docx,.doc"
           style="display: none"
           @change="handleFileSelect"
         />
@@ -228,7 +339,7 @@ onMounted(() => {
             {{ row.uploadTime }}
           </template>
         </el-table-column>
-        <el-table-column prop="expireTime" label="过期时间" width="180" align="center">
+        <el-table-column prop="expireTime" label="过期时间" width="220" align="center">
           <template #default="{ row }">
             <span :class="['expire-time', isExpiring(row.expireTime) ? 'expiring' : '']">
               {{ row.expireTime }}
@@ -236,8 +347,11 @@ onMounted(() => {
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right" align="center">
+        <el-table-column label="操作" width="240" fixed="right" align="center">
           <template #default="{ row }">
+            <button class="action-btn action-grade" @click="handleGrade(row)">
+              批阅
+            </button>
             <button class="action-btn action-download" @click="handleDownload(row)">
               <Download :size="14" /> 下载
             </button>
@@ -274,6 +388,71 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- ==================== 批阅参数弹窗 ==================== -->
+    <el-dialog v-model="gradeDialogVisible" title="发起批阅" width="480px" destroy-on-close>
+      <div v-if="currentRow" class="grade-dialog-body">
+        <div class="grade-file-info">
+          <span class="grade-file-label">目标文件：</span>
+          <span class="grade-file-name">{{ currentRow.fileName }}</span>
+          <span :class="['grade-file-type', isZip(currentRow.fileName) ? 'type-zip' : 'type-word']">
+            {{ isZip(currentRow.fileName) ? 'ZIP' : 'Word' }}
+          </span>
+        </div>
+
+        <el-form :model="gradeForm" label-position="top" class="grade-form">
+          <el-form-item label="班级" required>
+            <el-select v-model="gradeForm.classId" placeholder="请选择班级" filterable>
+              <el-option
+                v-for="c in classList"
+                :key="c.id"
+                :label="c.className"
+                :value="String(c.id)"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="评分模板" required>
+            <el-select v-model="gradeForm.standardConfigId" placeholder="请选择评分模板" filterable>
+              <el-option
+                v-for="s in standardList"
+                :key="s.id"
+                :label="s.standardName"
+                :value="s.id!"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="任务类别" required>
+            <el-select v-model="gradeForm.taskCategory" placeholder="请选择任务类别">
+              <el-option label="作业" value="HOMEWORK" />
+              <el-option label="期中" value="MIDTERM" />
+              <el-option label="期末" value="FINAL" />
+              <el-option label="项目" value="PROJECT" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="任务频率" required>
+            <el-input-number
+              v-model="gradeForm.taskSequence"
+              :min="1"
+              :controls="false"
+              placeholder="第几次"
+              class="sequence-input"
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <template #footer>
+        <button type="button" class="btn btn-outline" @click="gradeDialogVisible = false">取消</button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          :disabled="gradeSubmitting"
+          @click="handleGradeSubmit"
+        >
+          {{ gradeSubmitting ? '提交中...' : '开始批阅' }}
+        </button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -289,9 +468,9 @@ export function isExpiring(expireTime: string): boolean {
 
 <style scoped>
 .upload-files-view {
-  max-width: 1400px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 32px;
+  padding: 40px 32px;
 }
 
 .page-header {
@@ -299,16 +478,16 @@ export function isExpiring(expireTime: string): boolean {
 }
 
 .page-title {
-  font-size: 28px;
-  font-weight: 700;
-  color: #0f172a;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
   margin: 0 0 6px 0;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.3px;
 }
 
 .page-subtitle {
-  font-size: 15px;
-  color: #64748b;
+  font-size: 14px;
+  color: var(--text-secondary);
   margin: 0;
 }
 
@@ -326,7 +505,7 @@ export function isExpiring(expireTime: string): boolean {
 .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .search-box {
@@ -338,38 +517,47 @@ export function isExpiring(expireTime: string): boolean {
 .search-icon {
   position: absolute;
   left: 12px;
-  color: #94a3b8;
+  color: var(--text-tertiary);
   pointer-events: none;
 }
 
 .search-input {
   width: 240px;
-  height: 38px;
-  padding: 0 12px 0 36px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  height: 36px;
+  padding: 0 12px 0 34px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.search-input::placeholder {
+  color: var(--text-tertiary);
 }
 
 .search-input:focus {
-  border-color: #93c5fd;
+  border-color: var(--border-strong);
 }
 
 /* Buttons */
 .btn {
-  height: 38px;
-  padding: 0 16px;
-  border-radius: 10px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-md);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.2s;
-  border: none;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  border: 1px solid transparent;
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn:disabled {
@@ -378,54 +566,55 @@ export function isExpiring(expireTime: string): boolean {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #93c5fd 0%, #60a5fa 100%);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(96, 165, 250, 0.3);
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: var(--text-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  box-shadow: 0 4px 14px rgba(96, 165, 250, 0.4);
-  transform: translateY(-1px);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-success {
-  background: linear-gradient(135deg, #86efac 0%, #4ade80 100%);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(74, 222, 128, 0.3);
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: var(--text-primary);
 }
 
 .btn-success:hover:not(:disabled) {
-  box-shadow: 0 4px 14px rgba(74, 222, 128, 0.4);
-  transform: translateY(-1px);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-search {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+  color: var(--text-secondary);
 }
 
 .btn-search:hover {
-  background: #e2e8f0;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
 }
 
 .btn-outline {
-  background: transparent;
-  border: 1px solid #e2e8f0;
-  color: #475569;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
 }
 
 .btn-outline:hover {
-  background: #f8fafc;
-  border-color: #93c5fd;
-  color: #60a5fa;
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .btn-outline.sort-active {
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  border-color: #93c5fd;
-  color: #3b82f6;
+  background: var(--accent-bg-strong);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(147, 197, 253, 0.2);
 }
 
 .sort-icon {
@@ -437,15 +626,42 @@ export function isExpiring(expireTime: string): boolean {
 }
 
 .sort-text {
-  transition: color 0.2s ease;
+  transition: color var(--transition);
+}
+
+.filter-select {
+  width: 130px;
+}
+
+.filter-select :deep(.el-select__wrapper) {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: none !important;
+  min-height: 36px;
+  transition: border-color var(--transition);
+}
+
+.filter-select :deep(.el-select__wrapper:hover) {
+  border-color: var(--border-strong);
+}
+
+.filter-select :deep(.el-select__wrapper.is-focused) {
+  border-color: var(--text-primary) !important;
+}
+
+.filter-select :deep(.el-select__placeholder),
+.filter-select :deep(.el-select__selected-item) {
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 /* Table Card */
 .table-card {
-  background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-  border: 1px solid #e2e8f0;
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-default);
   padding: 20px;
 }
 
@@ -458,7 +674,7 @@ export function isExpiring(expireTime: string): boolean {
 .file-icon {
   width: 18px;
   height: 18px;
-  color: #60a5fa;
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 
@@ -467,52 +683,63 @@ export function isExpiring(expireTime: string): boolean {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .expire-tag {
   font-size: 11px;
   padding: 2px 6px;
-  border-radius: 4px;
-  background: #fef3c7;
-  color: #d97706;
+  border-radius: var(--radius-sm);
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
   font-weight: 500;
 }
 
 .expiring {
-  color: #d97706;
+  color: var(--status-warning);
   font-weight: 500;
 }
 
 /* Action Buttons */
 .action-btn {
   padding: 5px 10px;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  transition: all 0.15s;
+  transition: background var(--transition), color var(--transition);
   margin: 0 3px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
-.action-download {
-  background: #eff6ff;
-  color: #3b82f6;
+.action-grade {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.action-grade:hover {
+  background: var(--accent-bg-strong);
+  color: var(--text-primary);
 }
 
 .action-download:hover {
-  background: #dbeafe;
+  background: var(--accent-bg-strong);
+  color: var(--text-primary);
 }
 
 .action-delete {
-  background: #fef2f2;
-  color: #ef4444;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
 .action-delete:hover {
-  background: #fee2e2;
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
 }
 
 /* Pagination */
@@ -522,12 +749,12 @@ export function isExpiring(expireTime: string): boolean {
   align-items: center;
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .pagination-info {
   font-size: 13px;
-  color: #64748b;
+  color: var(--text-secondary);
 }
 
 .pagination-controls {
@@ -537,31 +764,28 @@ export function isExpiring(expireTime: string): boolean {
 }
 
 .page-size-select {
-  width: 100px;
+  width: 110px;
 }
 
 .page-size-select :deep(.el-input__wrapper) {
-  border-radius: 8px;
-  transition: all 0.2s ease;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+  transition: box-shadow var(--transition);
 }
 
 .page-size-select :deep(.el-input__inner) {
   font-size: 13px;
-  color: #475569;
-}
-
-.page-size-select:hover :deep(.el-input__wrapper) {
-  border-color: #93c5fd;
+  color: var(--text-primary);
 }
 
 .page-size-select :deep(.el-input__wrapper.is-focused) {
-  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.2) !important;
-  border-color: #93c5fd;
+  box-shadow: 0 0 0 1px var(--border-strong) inset !important;
 }
 
 .page-size-select :deep(.el-select__caret) {
-  color: #94a3b8;
-  transition: transform 0.2s ease;
+  color: var(--text-tertiary);
+  transition: transform var(--transition);
 }
 
 .page-size-select :deep(.el-select__caret.is-reverse) {
@@ -574,11 +798,126 @@ export function isExpiring(expireTime: string): boolean {
 }
 
 .page-size-select :deep(.el-select-dropdown__item.selected) {
-  color: #3b82f6;
+  color: var(--text-primary);
   font-weight: 600;
 }
 
+.page-size-select :deep(.el-select-dropdown__item.hover),
 .page-size-select :deep(.el-select-dropdown__item:hover) {
-  background: #eff6ff;
+  background: var(--bg-subtle);
+}
+
+/* ==================== 批阅弹窗 ==================== */
+.grade-dialog-body {
+  padding: 0 4px;
+}
+
+.grade-file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+  margin-bottom: 20px;
+  font-size: 13px;
+}
+
+.grade-file-label {
+  color: var(--text-secondary);
+}
+
+.grade-file-name {
+  color: var(--text-primary);
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grade-file-type {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.type-zip {
+  background: var(--accent-bg-strong);
+  color: var(--text-primary);
+}
+
+.type-word {
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+}
+
+.grade-form :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+
+.grade-form :deep(.el-form-item__label) {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding-bottom: 6px;
+  line-height: 1.4;
+}
+
+.grade-form :deep(.el-select),
+.grade-form :deep(.el-input-number) {
+  width: 100%;
+}
+
+.grade-form :deep(.el-select__wrapper),
+.grade-form :deep(.el-input__wrapper) {
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+  transition: box-shadow var(--transition);
+}
+
+.grade-form :deep(.el-select__wrapper.is-focused),
+.grade-form :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px var(--border-strong) inset !important;
+}
+
+.grade-form :deep(.el-select__wrapper:hover),
+.grade-form :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px var(--border-strong) inset;
+}
+
+.grade-form :deep(.el-input__inner) {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.sequence-input :deep(.el-input__inner) {
+  text-align: left;
+}
+
+@media (max-width: 640px) {
+  .upload-files-view {
+    padding: 24px 16px;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar-left,
+  .toolbar-right {
+    flex-wrap: wrap;
+  }
+
+  .search-input {
+    width: 100%;
+  }
 }
 </style>

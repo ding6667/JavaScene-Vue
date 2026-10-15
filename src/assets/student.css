@@ -1,0 +1,309 @@
+/* ============================================================
+   学生端共享样式（全局，st- 前缀避免冲突）
+   设计令牌沿用 App.vue 中定义的 stone 暖灰体系，保持三端一致
+   ============================================================ */
+
+/* ---------- 页面骨架 ---------- */
+.st-view {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 40px 32px;
+}
+
+.st-page-header {
+  margin-bottom: 24px;
+}
+
+.st-page-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 6px 0;
+  letter-spacing: -0.3px;
+}
+
+.st-page-subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* ---------- 卡片 ---------- */
+.st-card {
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-default);
+  overflow: hidden;
+}
+
+.st-card__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 24px 0;
+}
+
+.st-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.st-card__hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 2px 0 0;
+}
+
+.st-card__body {
+  padding: 20px 24px 24px;
+}
+
+/* ---------- 按钮 ---------- */
+.st-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition),
+    border-color var(--transition), box-shadow var(--transition);
+  border: 1px solid transparent;
+}
+
+.st-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 主要按钮：黑底白字 */
+.st-btn--primary {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: var(--text-primary);
+}
+
+.st-btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* 次要按钮：白底黑边 */
+.st-btn--secondary {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.st-btn--secondary:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+
+/* 弱化按钮 */
+.st-btn--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+
+.st-btn--ghost:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.st-btn--block {
+  width: 100%;
+}
+
+/* 文本按钮 */
+.st-text-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition), color var(--transition);
+}
+
+.st-text-btn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.st-text-btn:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
+.st-text-btn--danger:hover:not(:disabled) {
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
+/* ---------- 标签 / 徽章 ---------- */
+.st-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.6;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.st-badge--neutral {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+
+.st-badge--dark {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+}
+
+.st-badge--outline {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+}
+
+.st-badge--success {
+  background: var(--status-success-bg);
+  color: var(--status-success);
+}
+
+.st-badge--warning {
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+}
+
+.st-badge--danger {
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
+.st-badge--info {
+  background: var(--status-info-bg);
+  color: var(--status-info);
+}
+
+/* ---------- 分段滑块（难度/模式切换） ---------- */
+.st-seg {
+  position: relative;
+  display: inline-flex;
+  height: 36px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 3px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.st-seg__slider {
+  position: absolute;
+  top: 3px;
+  height: calc(100% - 6px);
+  background: var(--text-primary);
+  border-radius: calc(var(--radius-md) - 2px);
+  box-shadow: 0 1px 3px rgba(28, 25, 23, 0.12);
+  transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.st-seg__option {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  border: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.24s ease;
+  font-family: inherit;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.st-seg__option--active {
+  color: var(--bg-surface);
+  font-weight: 600;
+}
+
+/* ---------- 进度条 ---------- */
+.st-progress {
+  height: 6px;
+  background: var(--bg-muted);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.st-progress__bar {
+  height: 100%;
+  background: var(--text-primary);
+  border-radius: 3px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ---------- 空状态 ---------- */
+.st-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 16px;
+  color: var(--text-tertiary);
+}
+
+.st-empty__icon {
+  opacity: 0.5;
+}
+
+.st-empty__text {
+  font-size: 13px;
+}
+
+/* ---------- 代码块（黑白灰语法高亮） ---------- */
+.st-code {
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.tok-keyword { color: #3d4a58; font-weight: 600; }   /* 关键字：深蓝灰 */
+.tok-string  { color: #7a6a52; }                      /* 字符串：暖灰褐 */
+.tok-comment { color: #a8a29e; font-style: italic; }  /* 注释：浅灰 */
+.tok-number  { color: #4a5a6a; }                      /* 数字 */
+.tok-type    { color: #1c1917; font-weight: 600; }    /* 类型名：近黑 */
+.tok-default { color: #44403c; }
+
+/* ---------- 统计卡 ---------- */
+.st-stat-value {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.5px;
+  line-height: 1.2;
+}
+
+.st-stat-label {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}

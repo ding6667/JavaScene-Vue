@@ -1,3 +1,9 @@
+<!--
+  批阅成绩明细表 —— 当前为 UI 骨架。
+  接口预留：后端未提供批阅结果明细接口（无"按批阅任务查询各学生得分/评语"的路径），
+  也未提供成绩 Excel 导出接口，因此本组件不自行取数：
+  父级传入 results 时正常渲染，未传入时展示完整表头 + 空态。
+-->
 <template>
   <div class="result-table">
     <div class="table-header">
@@ -24,7 +30,8 @@
           <button class="btn btn-ghost" @click="applyFilter">筛选</button>
           <button class="btn btn-ghost" @click="resetFilter">重置</button>
         </div>
-        <button class="btn btn-primary" @click="$emit('export')">
+        <!-- 接口预留：后端未提供成绩导出 Excel 接口 -->
+        <button class="btn btn-primary" disabled title="后端未提供导出接口">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -39,26 +46,58 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th @click="sortBy('studentId')" class="sortable">
-              学号
+            <th @click="sortBy('studentNo')" class="sortable">
+              学生
               <svg class="sort-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
             </th>
-            <th>姓名</th>
+            <th @click="sortBy('className')" class="sortable">
+              班级
+              <svg class="sort-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+            </th>
+            <th>批阅任务</th>
+            <th>状态</th>
             <th @click="sortBy('score')" class="sortable">
-              评分
+              得分
               <svg class="sort-icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
             </th>
-            <th>评语</th>
+            <th>AI 评语</th>
             <th>操作</th>
           </tr>
         </thead>
-        <tbody>
-          <tr v-for="row in displayData" :key="row.studentId">
-            <td class="cell-id">{{ row.studentId }}</td>
-            <td class="cell-name">{{ row.studentName }}</td>
+        <tbody v-if="loading">
+          <tr>
+            <td colspan="7">
+              <div class="st-empty" style="padding: 48px 16px;">
+                <div class="st-empty__text">正在加载成绩明细…</div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+        <tbody v-else-if="displayData.length === 0">
+          <tr>
+            <td colspan="7">
+              <div class="st-empty" style="padding: 56px 16px;">
+                <FileClock :size="34" :stroke-width="1.2" class="st-empty__icon" />
+                <div class="st-empty__text">暂无成绩明细</div>
+                <div class="shell-note">接口预留：后端未提供按批阅任务查询各学生得分明细的接口</div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+        <tbody v-else>
+          <tr v-for="row in displayData" :key="row.studentNo">
+            <td class="cell-name">
+              {{ row.studentName }}
+              <span class="cell-id">{{ row.studentNo }}</span>
+            </td>
+            <td class="cell-secondary">{{ row.className || '—' }}</td>
+            <td class="cell-secondary">{{ row.taskName || '—' }}</td>
+            <td>
+              <span class="st-badge" :class="row.statusBadge ?? 'st-badge--neutral'">{{ row.statusLabel }}</span>
+            </td>
             <td>
               <span :class="['score-badge', scoreBadgeClass(row.score)]">
-                {{ formatScore(row.score) }}
+                {{ displayScore(row.score) }}
               </span>
             </td>
             <td class="cell-comment">{{ truncate(row.comment, 40) }}</td>
@@ -73,33 +112,21 @@
     <!-- 分页 -->
     <div class="table-pagination">
       <span class="pagination-info">
-        共 {{ displayData.length }} 条 · 第 {{ currentPage }} / {{ Math.ceil(displayData.length / pageSize) }} 页
+        共 {{ sortedData.length }} 条 · 第 {{ currentPage }} / {{ totalPage }} 页
       </span>
       <div class="pagination-controls">
-        <select v-model="pageSize" class="page-size-select">
+        <select v-model.number="pageSize" class="page-size-select">
           <option :value="10">10/页</option>
           <option :value="20">20/页</option>
           <option :value="50">50/页</option>
           <option :value="100">100/页</option>
         </select>
-        <button
-          class="page-btn"
-          :disabled="currentPage === 1"
-          @click="currentPage--"
-        >
-          上一页
-        </button>
-        <button
-          class="page-btn"
-          :disabled="currentPage >= Math.ceil(displayData.length / pageSize)"
-          @click="currentPage++"
-        >
-          下一页
-        </button>
+        <button class="page-btn" :disabled="currentPage === 1" @click="currentPage--">上一页</button>
+        <button class="page-btn" :disabled="currentPage >= totalPage" @click="currentPage++">下一页</button>
       </div>
     </div>
 
-    <!-- 详情抽屉 -->
+    <!-- 详情抽屉（骨架，数据随明细接口一并补齐） -->
     <Teleport to="body">
       <Transition name="drawer">
         <div v-if="drawerVisible" class="drawer-overlay" @click.self="drawerVisible = false">
@@ -114,22 +141,22 @@
             </div>
             <div v-if="currentDetail" class="drawer-body">
               <div class="detail-section">
-                <span class="detail-label">学号</span>
-                <span class="detail-value">{{ currentDetail.studentId }}</span>
+                <span class="detail-label">学生</span>
+                <span class="detail-value">{{ currentDetail.studentName }}（{{ currentDetail.studentNo }}）</span>
               </div>
               <div class="detail-section">
-                <span class="detail-label">姓名</span>
-                <span class="detail-value">{{ currentDetail.studentName }}</span>
+                <span class="detail-label">班级 / 任务</span>
+                <span class="detail-value">{{ currentDetail.className || '—' }} · {{ currentDetail.taskName || '—' }}</span>
               </div>
               <div class="detail-section">
-                <span class="detail-label">评分</span>
+                <span class="detail-label">得分</span>
                 <span :class="['detail-value', 'detail-score', scoreBadgeClass(currentDetail.score)]">
-                  {{ formatScore(currentDetail.score) }}
+                  {{ displayScore(currentDetail.score) }}
                 </span>
               </div>
               <div class="detail-section">
                 <span class="detail-label">评语</span>
-                <p class="detail-comment">{{ currentDetail.comment }}</p>
+                <p class="detail-comment">{{ currentDetail.comment || '暂无评语' }}</p>
               </div>
             </div>
           </div>
@@ -140,66 +167,86 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import type { GradingResult } from '@/types';
+import { computed, ref } from 'vue';
+import { FileClock } from 'lucide-vue-next';
 import { formatScore } from '@/utils/format';
+/**
+ * 成绩明细行（UI 壳数据结构）。
+ * 接口预留：后端未提供批阅结果明细接口，字段待后端补齐后与本类型对齐。
+ */
+interface ResultRow {
+  studentNo: string;
+  studentName: string;
+  className: string;
+  taskName: string;
+  statusLabel: string;
+  /** st-badge 修饰类，缺省用中性样式 */
+  statusBadge?: string;
+  score: number | null;
+  comment: string;
+}
 
-const props = defineProps<{
-  results: GradingResult[];
-  loading: boolean;
-}>();
-
-defineEmits<{
-  export: [];
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** 明细列表；后端无接口时父级可不传，组件展示空态 */
+    results?: ResultRow[];
+    loading?: boolean;
+  }>(),
+  { results: () => [], loading: false },
+);
 
 const filterMinScore = ref<number | undefined>(undefined);
 const filterMaxScore = ref<number | undefined>(undefined);
-const sortField = ref<string | null>(null);
+const sortField = ref<keyof ResultRow | null>(null);
 const sortOrder = ref<'asc' | 'desc' | null>(null);
 const currentPage = ref(1);
 const pageSize = ref(20);
 const drawerVisible = ref(false);
-const currentDetail = ref<GradingResult | null>(null);
+const currentDetail = ref<ResultRow | null>(null);
 
-const filteredData = computed(() => {
+const filteredData = computed<ResultRow[]>(() => {
   let data = [...props.results];
-  if (filterMinScore.value !== undefined) {
-    data = data.filter((r) => r.score >= filterMinScore.value!);
+  if (filterMinScore.value !== undefined && !Number.isNaN(filterMinScore.value)) {
+    data = data.filter((r) => (r.score ?? -1) >= filterMinScore.value!);
   }
-  if (filterMaxScore.value !== undefined) {
-    data = data.filter((r) => r.score <= filterMaxScore.value!);
+  if (filterMaxScore.value !== undefined && !Number.isNaN(filterMaxScore.value)) {
+    data = data.filter((r) => (r.score ?? Number.MAX_SAFE_INTEGER) <= filterMaxScore.value!);
   }
   return data;
 });
 
-const sortedData = computed(() => {
+const sortedData = computed<ResultRow[]>(() => {
   const data = [...filteredData.value];
   if (sortField.value) {
-    const field = sortField.value as keyof GradingResult;
+    const field = sortField.value;
     data.sort((a, b) => {
-      const aVal = a[field] as number | string;
-      const bVal = b[field] as number | string;
-      return sortOrder.value === 'asc' ? (aVal > bVal ? 1 : -1) : (aVal < bVal ? 1 : -1);
+      const aVal = a[field] ?? '';
+      const bVal = b[field] ?? '';
+      const cmp = aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+      return sortOrder.value === 'asc' ? cmp : -cmp;
     });
   }
   return data;
 });
 
+const totalPage = computed(() => Math.max(1, Math.ceil(sortedData.value.length / pageSize.value)));
+
 const displayData = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value;
-  const end = start + pageSize.value;
-  return sortedData.value.slice(start, end);
+  return sortedData.value.slice(start, start + pageSize.value);
 });
 
-function applyFilter() { currentPage.value = 1; }
+function applyFilter() {
+  currentPage.value = 1;
+}
+
 function resetFilter() {
   filterMinScore.value = undefined;
   filterMaxScore.value = undefined;
   currentPage.value = 1;
 }
 
-function sortBy(field: string) {
+function sortBy(field: keyof ResultRow) {
   if (sortField.value === field) {
     sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc';
   } else {
@@ -208,20 +255,26 @@ function sortBy(field: string) {
   }
 }
 
-function showDetail(row: GradingResult) {
+function showDetail(row: ResultRow) {
   currentDetail.value = row;
   drawerVisible.value = true;
 }
 
 function truncate(str: string, len: number): string {
-  if (str.length <= len) return str;
-  return str.slice(0, len) + '...';
+  if (!str) return '—';
+  return str.length <= len ? str : `${str.slice(0, len)}...`;
 }
 
-function scoreBadgeClass(score: number): string {
+function scoreBadgeClass(score: number | null): string {
+  if (score === null || score === undefined) return 'score-none';
   if (score >= 90) return 'score-excellent';
   if (score >= 60) return 'score-pass';
   return 'score-fail';
+}
+
+/** 得分展示：明细接口未就绪时 score 为空，用 — 占位 */
+function displayScore(score: number | null): string {
+  return score === null || score === undefined ? '—' : formatScore(score);
 }
 </script>
 
@@ -241,9 +294,9 @@ function scoreBadgeClass(score: number): string {
 
 .table-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .header-actions {
@@ -261,22 +314,27 @@ function scoreBadgeClass(score: number): string {
 
 .filter-input {
   width: 80px;
-  height: 34px;
+  height: 32px;
   padding: 0 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   font-size: 13px;
-  color: #0f172a;
+  color: var(--text-primary);
+  background: var(--bg-surface);
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color var(--transition);
+}
+
+.filter-input::placeholder {
+  color: var(--text-tertiary);
 }
 
 .filter-input:focus {
-  border-color: #818cf8;
+  border-color: var(--border-strong);
 }
 
 .filter-sep {
-  color: #94a3b8;
+  color: var(--text-tertiary);
   font-size: 13px;
 }
 
@@ -284,14 +342,20 @@ function scoreBadgeClass(score: number): string {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 34px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   font-size: 13px;
   font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .btn-icon {
@@ -300,52 +364,55 @@ function scoreBadgeClass(score: number): string {
 }
 
 .btn-ghost {
-  background: transparent;
-  color: #64748b;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+  color: var(--text-secondary);
 }
 
 .btn-ghost:hover {
-  background: #f1f5f9;
-  color: #0f172a;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.3);
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: var(--text-primary);
 }
 
-.btn-primary:hover {
-  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .table-wrapper {
   overflow-x: auto;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
 }
 
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .data-table th,
 .data-table td {
   padding: 12px 16px;
   text-align: left;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .data-table th {
-  background: #f8fafc;
-  font-weight: 600;
-  color: #475569;
-  font-size: 13px;
+  background: var(--bg-subtle);
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
 .data-table th.sortable {
@@ -354,7 +421,7 @@ function scoreBadgeClass(score: number): string {
 }
 
 .data-table th.sortable:hover {
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .sort-icon {
@@ -370,7 +437,7 @@ function scoreBadgeClass(score: number): string {
 }
 
 .data-table tbody tr:hover {
-  background: #f8fafc;
+  background: var(--bg-subtle);
 }
 
 .data-table tbody tr:last-child td {
@@ -378,43 +445,61 @@ function scoreBadgeClass(score: number): string {
 }
 
 .cell-id {
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 13px;
-  color: #64748b;
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-left: 6px;
 }
 
 .cell-name {
   font-weight: 500;
-  color: #0f172a;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.cell-secondary {
+  color: var(--text-secondary);
+}
+
+.shell-note {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+  max-width: 520px;
 }
 
 .score-badge {
   display: inline-block;
   padding: 3px 10px;
-  border-radius: 20px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   min-width: 48px;
   text-align: center;
 }
 
 .score-excellent {
-  background: #dcfce7;
-  color: #16a34a;
+  background: var(--status-success-bg);
+  color: var(--status-success);
 }
 
 .score-pass {
-  background: #fef3c7;
-  color: #d97706;
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
 }
 
 .score-fail {
-  background: #fee2e2;
-  color: #dc2626;
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
+.score-none {
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
 }
 
 .cell-comment {
-  color: #64748b;
+  color: var(--text-secondary);
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -424,16 +509,18 @@ function scoreBadgeClass(score: number): string {
 .btn-link {
   background: none;
   border: none;
-  color: #6366f1;
+  color: var(--text-secondary);
   font-size: 13px;
+  font-family: inherit;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 4px;
-  transition: all 0.15s;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition), color var(--transition);
 }
 
 .btn-link:hover {
-  background: #f5f3ff;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
 }
 
 .table-pagination {
@@ -442,14 +529,14 @@ function scoreBadgeClass(score: number): string {
   align-items: center;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border-subtle);
   flex-wrap: wrap;
   gap: 12px;
 }
 
 .pagination-info {
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--text-tertiary);
 }
 
 .pagination-controls {
@@ -459,31 +546,33 @@ function scoreBadgeClass(score: number): string {
 }
 
 .page-size-select {
-  height: 34px;
+  height: 32px;
   padding: 0 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
   font-size: 13px;
-  color: #475569;
+  color: var(--text-primary);
+  background: var(--bg-surface);
   outline: none;
   cursor: pointer;
 }
 
 .page-btn {
-  height: 34px;
+  height: 32px;
   padding: 0 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
   font-size: 13px;
-  color: #475569;
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
 }
 
 .page-btn:hover:not(:disabled) {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .page-btn:disabled {
@@ -495,7 +584,7 @@ function scoreBadgeClass(score: number): string {
 .drawer-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(28, 25, 23, 0.4);
   backdrop-filter: blur(4px);
   z-index: 1000;
   display: flex;
@@ -506,8 +595,8 @@ function scoreBadgeClass(score: number): string {
   width: 400px;
   max-width: 100%;
   height: 100%;
-  background: #fff;
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.1);
+  background: var(--bg-surface);
+  box-shadow: -4px 0 24px rgba(28, 25, 23, 0.08);
   animation: slideIn 0.3s ease;
 }
 
@@ -521,32 +610,38 @@ function scoreBadgeClass(score: number): string {
   justify-content: space-between;
   align-items: center;
   padding: 20px 24px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .drawer-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .drawer-close {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: #f1f5f9;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.drawer-close:hover {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
 }
 
 .drawer-close svg {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
 }
 
 .drawer-body {
@@ -565,30 +660,30 @@ function scoreBadgeClass(score: number): string {
   display: block;
   font-size: 12px;
   font-weight: 500;
-  color: #64748b;
+  color: var(--text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
   margin-bottom: 6px;
 }
 
 .detail-value {
-  font-size: 15px;
-  color: #0f172a;
+  font-size: 14px;
+  color: var(--text-primary);
 }
 
 .detail-score {
-  font-size: 24px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 600;
   display: inline-block;
   padding: 6px 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
 }
 
 .detail-comment {
   margin: 0;
   white-space: pre-wrap;
   line-height: 1.7;
-  color: #475569;
+  color: var(--text-secondary);
 }
 
 /* Drawer transitions */

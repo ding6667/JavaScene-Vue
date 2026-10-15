@@ -8,44 +8,29 @@ export interface UploadProgress {
   percent: number; // 0-100
 }
 
-export interface UploadResponse {
+// ==================== 批阅启动参数 ====================
+
+/** 批阅任务类别 */
+export type TaskCategory = 'HOMEWORK' | 'MIDTERM' | 'FINAL' | 'PROJECT';
+
+/** 启动批阅通用参数（ZIP / Word 共有字段） */
+export interface StartGradingBase {
+  /** 班级 id（后端为字符串） */
+  classId: string;
+  /** 评分标准模板 id（settings/getStandard 返回的 id） */
+  standardConfigId: number;
+  taskCategory: TaskCategory;
+  taskSequence: number;
+}
+
+/** 启动项目批阅（ZIP）参数 —— POST /api/grading/startProject */
+export interface StartProjectRequest extends StartGradingBase {
   uploadId: string;
-  message: string;
 }
 
-// ==================== 批阅相关类型 ====================
-
-export type GradingStatus = 'pending' | 'processing' | 'completed' | 'failed';
-
-export interface StudentStatus {
-  studentId: string;
-  studentName: string;
-  status: GradingStatus;
-  message?: string;
-}
-
-export interface GradingProgress {
-  total: number;
-  completed: number;
-  processing: number;
-  pending: number;
-  failed: number;
-  students: StudentStatus[];
-}
-
-export interface GradingResult {
-  studentId: string;
-  studentName: string;
-  score: number;
-  comment: string;
-  gradingCriteria?: string; // 评分标准标识，预留扩展
-}
-
-export interface GradingCriteria {
-  id: string;
-  name: string;
-  description: string;
-  weights?: Record<string, number>; // 预留：各项权重
+/** 启动普通文件批阅（Word）参数 —— POST /api/grading/startCommon */
+export interface StartCommonRequest extends StartGradingBase {
+  uploadIds: string[];
 }
 
 // ==================== API 通用响应 ====================
@@ -57,8 +42,8 @@ export interface ApiResponse<T = unknown> {
 }
 
 export interface PageResponse<T> {
-  list: T[];
+  records: T[];
   total: number;
-  page: number;
-  pageSize: number;
+  current: number;
+  size: number;
 }

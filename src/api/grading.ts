@@ -1,36 +1,48 @@
-import type { GradingProgress, GradingResult, ApiResponse } from '@/types';
+import type {
+  ApiResponse,
+  StartProjectRequest,
+  StartCommonRequest,
+} from '@/types';
 import axiosInstance from './index';
 
-// ==================== 获取批阅进度 ====================
-// ⚠️ 后端接口：GET /grading/progress?gradingId=xxx
-export async function getGradingProgress(gradingId: string): Promise<ApiResponse<GradingProgress>> {
-  const response = await axiosInstance.get<ApiResponse<GradingProgress>>('/grading/progress', {
-    params: { gradingId },
-  });
-  return response.data;
+// 注意：响应拦截器已返回 response.data（即 { code, message, data }），此处无需再 .data
+// 批阅进度与结果列表由 @/api/history 的 grading/task/* 提供，本模块只负责发起与控制。
+
+// ==================== 启动项目批阅（ZIP） ====================
+// 后端接口：POST /api/grading/startProject
+// 请求体：{ uploadId, standardConfigId, classId, taskCategory, taskSequence }
+// 响应 data 为批阅任务 ID（字符串），后续用于查询进度与控制
+export async function startProject(data: StartProjectRequest): Promise<ApiResponse<string>> {
+  return (await axiosInstance.post<ApiResponse<string>>('/api/grading/startProject', data)) as unknown as ApiResponse<string>;
 }
 
-// ==================== 获取批阅结果 ====================
-// ⚠️ 后端接口：GET /grading/results?gradingId=xxx
-export async function getGradingResults(gradingId: string): Promise<ApiResponse<GradingResult[]>> {
-  const response = await axiosInstance.get<ApiResponse<GradingResult[]>>('/grading/results', {
-    params: { gradingId },
-  });
-  return response.data;
+// ==================== 启动普通文件批阅（Word） ====================
+// 后端接口：POST /api/grading/startCommon
+// 请求体：{ uploadIds, standardConfigId, classId, taskCategory, taskSequence }
+export async function startCommon(data: StartCommonRequest): Promise<ApiResponse<string>> {
+  return (await axiosInstance.post<ApiResponse<string>>('/api/grading/startCommon', data)) as unknown as ApiResponse<string>;
 }
 
-// ==================== 导出 Excel ====================
-// ⚠️ 后端接口：GET /grading/export?gradingId=xxx&format=xlsx
-export async function exportExcel(gradingId: string, format = 'xlsx'): Promise<Blob> {
-  const response = await axiosInstance.get('/grading/export', {
-    params: { gradingId, format },
-    responseType: 'blob',
-  });
-  return response.data;
+// ==================== 暂停批阅 ====================
+// 后端接口：POST /api/grading/pause，请求体为任务 ID 字符串
+export async function pauseGrading(taskId: string): Promise<ApiResponse<string>> {
+  return (await axiosInstance.post<ApiResponse<string>>('/api/grading/pause', taskId)) as unknown as ApiResponse<string>;
 }
 
-// ==================== WebSocket 预留接口 ====================
-// ⚠️ 后续如需 WebSocket 实时推送进度，在此处扩展
-// export function initGradingWebSocket(gradingId: string, onProgress: (data: GradingProgress) => void) {
-//   // WebSocket 实现
-// }
+// ==================== 继续批阅 ====================
+// 后端接口：POST /api/grading/resume，请求体为任务 ID 字符串
+export async function resumeGrading(taskId: string): Promise<ApiResponse<string>> {
+  return (await axiosInstance.post<ApiResponse<string>>('/api/grading/resume', taskId)) as unknown as ApiResponse<string>;
+}
+
+// ==================== 取消批阅 ====================
+// 后端接口：POST /api/grading/cancel，请求体为任务 ID 字符串
+export async function cancelGrading(taskId: string): Promise<ApiResponse<string>> {
+  return (await axiosInstance.post<ApiResponse<string>>('/api/grading/cancel', taskId)) as unknown as ApiResponse<string>;
+}
+
+// ==================== 重试失败任务 ====================
+// 后端接口：POST /api/grading/retry，请求体为任务 ID 字符串
+export async function retryGrading(taskId: string): Promise<ApiResponse<string>> {
+  return (await axiosInstance.post<ApiResponse<string>>('/api/grading/retry', taskId)) as unknown as ApiResponse<string>;
+}

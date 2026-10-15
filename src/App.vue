@@ -1,15 +1,65 @@
 <template>
   <div class="app">
+    <PortalSwitcher />
     <router-view />
   </div>
 </template>
 
 <script setup lang="ts">
-// App.vue - 极简根组件
+// App.vue - 极简根组件（含全局三端切换滑块，固定右上角）
+import PortalSwitcher from '@/components/PortalSwitcher.vue';
 </script>
 
 <style>
-/* 全局样式 */
+/* ==================== 设计令牌 ==================== */
+/* 中性暖灰底色 + 单一低饱和度强调色，遵循简约低调、现代留白风格 */
+:root {
+  /* 背景层级 */
+  --bg-canvas: #fafaf9;        /* 页面底色 stone-50 */
+  --bg-surface: #ffffff;       /* 卡片/表面 */
+  --bg-subtle: #f5f5f4;        /* 次级背景 stone-100 */
+  --bg-muted: #f0eeec;         /* 悬停态 stone-200/50 */
+
+  /* 边框 */
+  --border-default: #e7e5e4;   /* stone-200 */
+  --border-subtle: #f0eeec;    /* 更浅的分割线 */
+  --border-strong: #d6d3d1;    /* stone-300，用于激活态 */
+
+  /* 文本 */
+  --text-primary: #1c1917;     /* stone-900 */
+  --text-secondary: #57534e;   /* stone-600 */
+  --text-tertiary: #a8a29e;    /* stone-400 */
+
+  /* 强调色（低饱和度暖灰） */
+  --accent: #57534e;           /* stone-600 */
+  --accent-hover: #44403c;     /* stone-700 */
+  --accent-bg: #f5f5f4;        /* stone-100 */
+  --accent-bg-strong: #e7e5e4; /* stone-200 */
+
+  /* 状态色（均降低饱和度） */
+  --status-success: #4d7c0f;   /* lime-700 */
+  --status-success-bg: #f7fee7;/* lime-100 */
+  --status-warning: #b45309;   /* amber-700 */
+  --status-warning-bg: #fef3c7;/* amber-100 */
+  --status-danger: #b91c1c;    /* red-700 */
+  --status-danger-bg: #fef2f2; /* red-50 */
+  --status-info: #475569;      /* slate-600 */
+  --status-info-bg: #f1f5f9;   /* slate-100 */
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* 阴影（低强度、暖色调） */
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04);
+  --shadow-md: 0 1px 3px rgba(28, 25, 23, 0.05), 0 1px 2px rgba(28, 25, 23, 0.03);
+
+  /* 过渡 */
+  --transition: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ==================== 全局重置 ==================== */
 *,
 *::before,
 *::after {
@@ -24,17 +74,19 @@ html, body {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  background: #f1f5f9;
-  color: #0f172a;
-  line-height: 1.5;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  line-height: 1.6;
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* 自定义滚动条 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -42,17 +94,28 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 3px;
+  background: rgba(28, 25, 23, 0.12);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(28, 25, 23, 0.2);
 }
 
 /* 选中文本 */
 ::selection {
-  background: rgba(99, 102, 241, 0.2);
-  color: #0f172a;
+  background: rgba(87, 83, 78, 0.15);
+  color: var(--text-primary);
+}
+
+/* 链接默认样式 */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 按钮基础重置 */
+button {
+  font-family: inherit;
 }
 </style>
