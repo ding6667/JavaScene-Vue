@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { getStandards, createStandard, updateStandard, deleteStandard } from '@/api/standard';
+import { getStandards, createStandard, updateStandard, deleteStandard } from '@/api/settings';
 import type { StandardConfig, StandardCreateRequest, StandardUpdateRequest } from '@/types/standard';
 
 export const useStandardStore = defineStore('standard', () => {

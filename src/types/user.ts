@@ -1,14 +1,21 @@
 /**
- * 运维端类型定义（字段以 openapi.json 的用户模块为准）
- * 监控、日志审计、数据备份、系统参数、知识库维护在后端暂无接口，页面仅保留 UI。
+ * 用户权限模块 DTO（后端 /api/user/*）
+ * 文件负责人：【D 用户权限与运维】
  */
 
-// ==================== 用户管理 ====================
+import type { PageResponse } from './index';
 
 /** 后端 roleName 取值 */
 export type UserRoleName = 'STUDENT' | 'TEACHER' | 'ADMIN';
 
-/** 用户信息响应（不含密码等敏感字段） */
+/** 角色码值 → 中文标签（后端只给码值） */
+export const ROLE_LABELS: Record<UserRoleName, string> = {
+  STUDENT: '学生',
+  TEACHER: '教师',
+  ADMIN: '管理员',
+};
+
+/** 用户信息响应（不含密码等敏感字段，已对接 / 待接 /user/info 同结构） */
 export interface AdminUser {
   id: number;
   username: string;
@@ -30,7 +37,7 @@ export interface AdminUser {
   createTime: string;
 }
 
-/** GET /api/user/records 查询参数 */
+/** GET /api/user/records 查询参数（已对接；后端暂无角色筛选参数，需前端分页过滤） */
 export interface UserQuery {
   pageNum: number;
   pageSize: number;
@@ -38,15 +45,10 @@ export interface UserQuery {
   keyword?: string;
 }
 
-/** GET /api/user/records 分页数据 */
-export interface UserPageData {
-  records: AdminUser[];
-  total: number;
-  current: number;
-  size: number;
-}
+/** GET /api/user/records 分页数据（已对接） */
+export type UserPageData = PageResponse<AdminUser>;
 
-/** POST /api/user/create 请求体 */
+/** POST /api/user/create 请求体（已对接；不含 studentNo/className 等，需创建后再 update 补全） */
 export interface UserCreateRequest {
   username: string;
   /** 明文提交，由服务端加密存储 */
@@ -57,7 +59,7 @@ export interface UserCreateRequest {
   roleName: UserRoleName;
 }
 
-/** PUT /api/user/update 请求体（后端不支持修改 username） */
+/** PUT /api/user/update 请求体（已对接，username 不可改） */
 export interface UserUpdateRequest {
   id: number;
   realName?: string;
@@ -71,4 +73,14 @@ export interface UserUpdateRequest {
   enabled?: number;
   /** 传入即重置密码 */
   password?: string;
+}
+
+/**
+ * POST /api/user/auth/admin/register 请求体 —— TODO 待接
+ * 需系统初始化密钥 app.admin.init-key，注册即登录，响应 data 为 token 字符串。
+ */
+export interface AdminRegisterRequest {
+  username: string;
+  password: string;
+  adminKey: string;
 }

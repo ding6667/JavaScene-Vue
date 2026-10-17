@@ -203,8 +203,19 @@
             </div>
           </template>
 
+          <!-- 加载失败：保留空态 + 错误文案 + 重试 -->
+          <div v-if="generalError && settingsStore.settings.length === 0" class="general-empty">
+            <Inbox :size="40" class="empty-icon" />
+            <p class="empty-title">常规设置加载失败</p>
+            <p class="empty-sub">{{ generalError }}</p>
+            <button class="btn btn-ghost" @click="loadGeneralSettings">
+              <RotateCcw :size="15" />
+              <span>重新加载</span>
+            </button>
+          </div>
+
           <!-- 空状态 -->
-          <div v-else-if="!settingsStore.loading" class="general-empty">
+          <div v-else-if="!settingsStore.loading && settingsStore.settings.length === 0" class="general-empty">
             <Inbox :size="40" class="empty-icon" />
             <p class="empty-title">暂无可配置项</p>
             <p class="empty-sub">尚未初始化常规设置，请稍后再试</p>
@@ -279,7 +290,15 @@
           </div>
 
           <div v-else-if="!store.loading" class="empty-state">
-            <p class="empty-text">暂无评分标准内容</p>
+            <div class="empty-box">
+              <p class="empty-text">
+                {{ store.error ? `评分模板加载失败：${store.error}` : '暂无评分标准内容' }}
+              </p>
+              <button class="btn btn-ghost" @click="reloadStandards">
+                <RotateCcw :size="15" />
+                <span>重新加载</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -393,7 +412,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch, computed, nextTick } from 'vue';
+import { ref, reactive, onMounted, watch, computed } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus';
 import { Plus, Pencil, Trash2, RotateCcw, Check, Inbox } from 'lucide-vue-next';
@@ -417,6 +436,12 @@ import { useAuthStore } from '@/stores/auth';
 import { useSettingsStore } from '@/stores/settings';
 import type { SettingsTab, RubricItem } from '@/types/standard';
 import type { CommonSetting } from '@/types/settings';
+
+/** 统一错误文案：后端函数仍是桩（抛「未实现：…」）时转为「接口待实现：@/api/settings.<fn>」 */
+function apiHint(e: unknown, fn: string): string {
+  const message = e instanceof Error ? e.message : String(e ?? '');
+  return message.includes('未实现') ? `接口待实现：@/api/settings.${fn}` : message || `${fn} 调用失败`;
+}
 
 // ==================== 控件识别 & 值转换 ====================
 function getKind(item: CommonSetting): ControlKind {
@@ -567,14 +592,33 @@ const moduleEditForm = reactive({
 });
 
 // ==================== 生命周期 / 守卫 ====================
-onMounted(async () => {
+
+/** 常规设置加载失败提示（已对接接口异常 / 后端仍是桩时保留空态 + 重试） */
+const generalError = ref<string | null>(null);
+
+async function loadGeneralSettings() {
+  generalError.value = null;
+  try {
+    await settingsStore.fetch();
+  } catch (e: unknown) {
+    generalError.value = apiHint(e, 'getCommonSettings');
+    return;
+  }
+  // 仅在成功后建立快照（避免把失败时的脏值当基线）
+  takeOriginalSnapshot();
+}
+
+/** 评分模板加载：store 内部已 catch 并写入 store.error，此处只提供重试入口 */
+async function reloadStandards() {
   await store.fetchStandards();
+}
+
+onMounted(async () => {
+  await reloadStandards();
   if (store.standards.length > 0) {
     selectedId.value = store.standards[0].id;
   }
-  await settingsStore.fetch();
-  // 首次加载后建立快照（避免 settingsStore.fetch 之前就初始化空的 original）
-  nextTick(() => takeOriginalSnapshot());
+  await loadGeneralSettings();
 });
 
 watch(
@@ -636,19 +680,14 @@ async function handleTabClick(key: SettingsTab) {
       const ok = await handleBatchSave(true);
       if (ok && dirtyCount.value === 0) activeTab.value = key;
     } else {
-      // 'cancel' 或 'close' → 不保存。先切 tab，再异步回滚 + 重拉（避免 UI 卡在原地）
+      // 'cancel' 或 'close' → 不保存。先切 tab，再回滚内存值并重拉后端最新（避免 UI 卡在原地）
       activeTab.value = key;
       revertToOriginal();
-      try {
-        await settingsStore.fetch();
-      } catch {
-        /* 静默 */
-      }
-      nextTick(() => takeOriginalSnapshot());
+      await loadGeneralSettings();
     }
     return;
   }
-  // 切回 general：如之前选了"不保存"，数据会是后端最新（因为上面已调 fetch）
+  // 切回 general：如之前选了"不保存"，数据会是后端最新（因为上面已重拉）
   activeTab.value = key;
 }
 
@@ -671,17 +710,16 @@ onBeforeRouteLeave(async (_to, _from, next) => {
     if (ok && dirtyCount.value === 0) next();
     else next(false); // 保存失败 → 停留在本页，让用户处理
   } else {
-    // 不保存：先同步回滚内存、再异步重拉后端最新 → 放行
+    // 不保存：同步回滚内存值后放行，并异步重拉后端最新，
+    // 让用户下次再进设置页直接拿到后端值，不必等 fetch 的空窗
     revertToOriginal();
     next();
-    // next() 之后组件会被 unmount，但 settingsStore 是全局的，这里仍异步刷新一次，
-    // 让用户下次再进设置页直接拿到后端最新，不必等 fetch 的空窗
     try {
       await settingsStore.fetch();
+      takeOriginalSnapshot();
     } catch {
-      /* 静默 */
+      /* 静默：组件已卸载，错误由拦截器提示 */
     }
-    nextTick(() => takeOriginalSnapshot());
   }
 });
 
@@ -696,17 +734,19 @@ async function handleBatchSave(silent = false): Promise<boolean> {
   savingBatch.value = true;
   let success = 0;
   let failed = 0;
+  let firstError = '';
   try {
     for (const item of dirtyItems) {
       try {
-        // 接口一次只改一个属性：PUT { configKey, configValue }
+        // 接口一次只改一个属性：PUT { configKey, configValue }（整对象提交后端不接受）
         await settingsStore.update(item.configKey, item.configValue);
         // 单项成功后立即写入 snapshot，避免整体失败时已成功的还标记 dirty
         originalValues[item.configKey] = item.configValue;
         success++;
-      } catch {
+      } catch (e: unknown) {
         failed++;
-        // 错误由响应拦截器统一提示；继续处理其他项
+        if (!firstError) firstError = apiHint(e, 'updateCommonSettings');
+        // 其余项继续尝试，最后统一提示
       }
     }
     // settingsStore.update 可能用返回的 settings 替换本地数据，所以需要重新建立快照
@@ -715,7 +755,7 @@ async function handleBatchSave(silent = false): Promise<boolean> {
       if (failed === 0) {
         ElMessage.success(`已保存 ${success} 项设置`);
       } else {
-        ElMessage.warning(`保存完成：成功 ${success} 项，失败 ${failed} 项`);
+        ElMessage.warning(`保存完成：成功 ${success} 项，失败 ${failed} 项（${firstError}）`);
       }
     }
     return failed === 0;
@@ -741,8 +781,8 @@ async function handleResetDefault() {
     // reset 已刷新 settingsStore.settings；重建 snapshot
     takeOriginalSnapshot();
     ElMessage.success('已恢复默认设置');
-  } catch {
-    // 错误由响应拦截器统一提示
+  } catch (e: unknown) {
+    ElMessage.error(apiHint(e, 'defaultSettings'));
   } finally {
     resetting.value = false;
   }
@@ -809,11 +849,14 @@ async function handleSubmit() {
   submitting.value = true;
 
   if (dialogMode.value === 'create') {
+    // StandardCreateRequest.userId 是字符串（与 StandardConfig.userId: number 口径不一致，见 @/types/standard）；
+    // 数值用户 ID 需 /api/user/info 才能取到（已接桩：待实现 @/api/user.fetchUserInfo），拿不到时降级用登录名
+    const operatorId = authStore.userId ? String(authStore.userId) : (authStore.username ?? '');
     const ok = await store.create({
       standardName: dialogForm.standardName,
       standardContent: dialogForm.standardContent,
       isCurrent: dialogForm.isCurrent,
-      userId: authStore.username || '1',
+      userId: operatorId,
     });
     if (ok) {
       ElMessage.success('创建成功');

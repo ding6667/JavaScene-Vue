@@ -1,19 +1,23 @@
 <script setup lang="ts">
 /**
- * 管理员注册 —— UI 骨架页（后端无对应接口）
+ * 管理员注册（已接桩：待实现 @/api/user.adminRegister）
  *
- * 接口预留：POST /api/user/auth/admin/register {username,password,adminKey}
- *  口径说明：
- *   - 需系统初始化密钥 app.admin.init-key（由后端配置文件下发，运维现场输入，不得对学生暴露）；
- *   - 注册即登录：校验通过后后端创建 ADMIN 角色账号，data 直接返回 token 字符串（不是对象），
- *     前端拿到后应写入用户态并跳转 /admin/dashboard；
- *   - 与普通用户注册的区别：不返回 AdminUser，只有 token；失败时由 message 提示密钥错误。
- *
- * 本页不接 api / pinia，仅保留表单与前端校验状态，提交按钮不发起请求。
+ * 口径说明：
+ *   - POST /api/user/auth/admin/register {username,password,adminKey}；
+ *   - 需系统初始化密钥 app.admin.init-key（后端配置项，运维现场输入，不得对学生暴露）；
+ *   - 注册即登录：成功时 data 直接返回 token 字符串（不是对象），
+ *     写入 authStore 持久化方法后跳 /admin/users；
+ *   - 失败（密钥错误等）由 axios 响应拦截器统一提示后端 message。
  */
 import { computed, ref } from 'vue';
-import { ArrowLeft, Eye, EyeOff, KeyRound, ShieldCheck } from 'lucide-vue-next';
+import { useRouter } from 'vue-router';
+import { ArrowLeft, Eye, EyeOff, KeyRound, Loader2, ShieldCheck } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
+import { adminRegister } from '@/api/user';
+import { useAuthStore } from '@/stores/auth';
+
+const router = useRouter();
+const authStore = useAuthStore();
 
 const form = ref({
   username: '',
@@ -24,6 +28,9 @@ const form = ref({
 
 const showPassword = ref(false);
 const showKey = ref(false);
+const submitting = ref(false);
+/** 接口未连通时的提示（桩抛错时保留表单内容供重试） */
+const apiError = ref<string | null>(null);
 
 const passwordValid = computed(() => {
   const len = form.value.password.length;
@@ -40,20 +47,48 @@ const canSubmit = computed(
     passwordValid.value &&
     !passwordMismatch.value &&
     form.value.confirmPassword !== '' &&
-    form.value.adminKey.trim() !== '',
+    form.value.adminKey.trim() !== '' &&
+    !submitting.value,
 );
 
-function handleSubmit() {
-  if (passwordMismatch.value) {
-    ElMessage.warning('两次输入的密码不一致');
+async function handleSubmit() {
+  if (!canSubmit.value) {
+    if (passwordMismatch.value) ElMessage.warning('两次输入的密码不一致');
     return;
   }
-  // 接口预留：后端未提供管理员注册接口，此处不发起请求
-  ElMessage.info('接口预留：后端未提供 POST /api/user/auth/admin/register 接口');
+  apiError.value = null;
+  submitting.value = true;
+  try {
+    // 后端成功时 data 为 token 字符串
+    const token = await adminRegister({
+      username: form.value.username.trim(),
+      password: form.value.password,
+      adminKey: form.value.adminKey.trim(),
+    });
+    if (!token) {
+      apiError.value = '注册接口未返回 token，请确认后端 POST /api/user/auth/admin/register 实现';
+      return;
+    }
+    authStore.persistToken(token, form.value.username.trim());
+    ElMessage.success('管理员账号注册成功，已自动登录');
+    await router.push('/admin/users');
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e ?? '');
+    // 桩必定抛「未实现：...」，此处转成统一的待实现口径，其余错误已由拦截器提示
+    apiError.value = message.includes('未实现')
+      ? '接口待实现：@/api/user.adminRegister'
+      : message || '注册失败，请检查初始化密钥';
+  } finally {
+    submitting.value = false;
+  }
 }
 
 function backToLogin() {
-  ElMessage.info('接口预留：管理员注册页待接入路由后可返回登录入口');
+  if (authStore.isAuthenticated) {
+    router.push('/admin/dashboard');
+    return;
+  }
+  router.push('/login');
 }
 </script>
 
@@ -119,17 +154,26 @@ function backToLogin() {
             </button>
           </div>
           <p class="form-hint">
-            接口预留：POST /api/user/auth/admin/register {username,password,adminKey}；
-            密钥来自后端配置 app.admin.init-key，注册即登录，data 返回 token 字符串。
+            已接桩：待实现 @/api/user.adminRegister —— POST /api/user/auth/admin/register
+            {username,password,adminKey}；密钥来自后端配置 app.admin.init-key，注册即登录，data 返回 token 字符串。
           </p>
         </div>
 
+        <!-- 接口未连通 / 注册失败提示：保留表单内容，可直接重试 -->
+        <div v-if="apiError" class="api-error">
+          <div class="api-error__text">{{ apiError }}</div>
+          <button class="st-text-btn" type="button" @click="apiError = null">收起提示</button>
+        </div>
+
         <button class="st-btn st-btn--primary st-btn--block" :disabled="!canSubmit" @click="handleSubmit">
-          <KeyRound :size="14" /> 注册并登录
+          <Loader2 v-if="submitting" :size="14" class="spin" />
+          <KeyRound v-else :size="14" />
+          {{ submitting ? '注册中…' : '注册并登录' }}
         </button>
 
         <button class="st-text-btn back-btn" @click="backToLogin">
-          <ArrowLeft :size="12" style="vertical-align: -2px;" /> 返回运维端首页
+          <ArrowLeft :size="12" style="vertical-align: -2px;" />
+          {{ authStore.isAuthenticated ? '返回运维端首页' : '返回登录页' }}
         </button>
       </div>
     </div>
@@ -224,5 +268,35 @@ function backToLogin() {
 .back-btn {
   width: 100%;
   margin-top: 12px;
+}
+
+.api-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 0 14px;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--status-danger);
+  background: var(--status-danger-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.api-error__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

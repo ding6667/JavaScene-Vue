@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import {
+  AlertCircle,
   CheckCircle2,
   KeyRound,
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   Upload,
@@ -19,8 +21,8 @@ import {
   resetPassword,
   toRoleName,
   updateUser,
-} from '@/api/admin';
-import type { AdminUser, UserRoleName } from '@/types/admin';
+} from '@/api/user';
+import type { AdminUser, UserRoleName } from '@/types/user';
 
 /** 角色中文标签（本文件内映射，后端 roleName 仅认 STUDENT/TEACHER/ADMIN） */
 const ROLE_LABELS: Record<UserRoleName, string> = {
@@ -36,6 +38,7 @@ const ROLE_BADGE: Record<UserRoleName, string> = {
 };
 
 const loading = ref(false);
+const loadError = ref<string | null>(null);
 const users = ref<AdminUser[]>([]);
 const total = ref(0);
 const pageNum = ref(1);
@@ -47,7 +50,8 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.v
 
 /**
  * 角色筛选为当前页本地过滤：
- * GET /api/user/records 仅接受 pageNum / pageSize / keyword，后端未开放 roleName 查询参数。
+ * 已对接 GET /api/user/records 仅接受 pageNum / pageSize / keyword，
+ * 后端未开放 roleName 查询参数，也无角色聚合接口，故只能在当前页内过滤。
  */
 const visibleUsers = computed(() =>
   roleFilter.value === 'all' ? users.value : users.value.filter((u) => u.roleName === roleFilter.value),
@@ -55,6 +59,7 @@ const visibleUsers = computed(() =>
 
 async function load() {
   loading.value = true;
+  loadError.value = null;
   try {
     const data = await fetchUsers({
       pageNum: pageNum.value,
@@ -63,8 +68,12 @@ async function load() {
     });
     users.value = data.records ?? [];
     total.value = data.total ?? 0;
-  } catch {
-    // 错误提示已由 axios 响应拦截器统一弹出，此处仅保证表格不残留脏数据
+  } catch (e: unknown) {
+    // 已对接接口：失败只保留空态 + 重试入口；若后端函数仍是桩，按其抛错文案提示待实现
+    const message = e instanceof Error ? e.message : String(e ?? '');
+    loadError.value = message.includes('未实现')
+      ? '接口待实现：@/api/user.fetchUsers'
+      : message || '用户列表加载失败';
     users.value = [];
     total.value = 0;
   } finally {
@@ -73,15 +82,17 @@ async function load() {
 }
 
 function reloadFirstPage() {
-  pageNum.value = 1;
-  void load();
+  if (pageNum.value === 1) {
+    void load();
+    return;
+  }
+  pageNum.value = 1; // 由 watch(pageNum) 触发 load
 }
 
 function goPage(page: number) {
   const target = Math.min(Math.max(1, page), totalPages.value);
   if (target === pageNum.value) return;
-  pageNum.value = target;
-  void load();
+  pageNum.value = target; // 由 watch(pageNum) 触发 load
 }
 
 // keyword 支持用户名/姓名模糊查，交由后端：输入防抖 400ms 后回到第一页重查
@@ -92,6 +103,7 @@ watch(keyword, () => {
 });
 
 watch(pageSize, reloadFirstPage);
+watch(pageNum, () => void load());
 
 onMounted(load);
 
@@ -151,7 +163,11 @@ function openEdit(u: AdminUser) {
   dialogVisible.value = true;
 }
 
-/** 新建必须给 6-32 位密码（后端 BCrypt 加密存储）；编辑时留空表示不改密码 */
+/**
+ * 新增必须给 6-32 位密码（后端 BCrypt 加密存储）；编辑时留空表示不改密码
+ * POST /api/user/create 的请求体不含 studentNo/className/major/title，
+ * 所以新增学生/教师时这些扩展字段要先收集，创建成功后再用返回的 id 二次 update 补全。
+ */
 const canSave = computed(() => {
   const basic = form.value.username.trim() !== '' && form.value.realName.trim() !== '';
   if (!basic) return false;
@@ -159,6 +175,25 @@ const canSave = computed(() => {
   const len = form.value.password.length;
   return len >= 6 && len <= 32;
 });
+
+/** 学生/教师扩展字段（create 请求体不支持，只能创建后 update） */
+function extraProfileFields(roleName: UserRoleName): Partial<AdminUser> {
+  if (roleName === 'STUDENT') {
+    return {
+      studentNo: form.value.studentNo.trim(),
+      className: form.value.className.trim(),
+      major: form.value.major.trim(),
+    };
+  }
+  if (roleName === 'TEACHER') {
+    return { title: form.value.title.trim() };
+  }
+  return {};
+}
+
+function hasContent(fields: Partial<AdminUser>): boolean {
+  return Object.values(fields).some((v) => typeof v === 'string' && v.trim() !== '');
+}
 
 async function handleSave() {
   if (!canSave.value || saving.value) return;
@@ -181,8 +216,8 @@ async function handleSave() {
       });
       ElMessage.success('账号信息已更新');
     } else {
-      // POST /api/user/create 请求体仅 username/password/realName/email/phone/roleName
-      await createUser({
+      // 第一步 POST /api/user/create：请求体仅 username/password/realName/email/phone/roleName
+      const created = await createUser({
         username: form.value.username.trim(),
         password: form.value.password,
         realName: form.value.realName.trim(),
@@ -190,7 +225,22 @@ async function handleSave() {
         phone: form.value.phone.trim() || undefined,
         roleName,
       });
-      ElMessage.success('账号创建成功');
+      const newId = created?.id;
+      const extra = extraProfileFields(roleName);
+      // 第二步 PUT /api/user/update：用新建用户 id 串行补全学号/班级/专业或职称
+      if (newId && hasContent(extra)) {
+        try {
+          await updateUser({ id: newId, ...extra });
+          ElMessage.success(`账号创建成功，学号/班级等扩展信息已补全（ID ${newId}）`);
+        } catch {
+          // 部分失败：账号已存在，仅扩展字段缺失，保留在列表可编辑补全
+          ElMessage.warning(
+            `账号已创建（ID ${newId}），但扩展信息补全失败，请在列表中「编辑」重试（已对接 PUT /api/user/update）`,
+          );
+        }
+      } else {
+        ElMessage.success(`账号创建成功（ID ${newId ?? '-'}）`);
+      }
     }
     dialogVisible.value = false;
     await load();
@@ -211,12 +261,19 @@ async function confirmAction(message: string, title: string): Promise<boolean> {
   }
 }
 
+/** 统一错误文案：桩函数抛「未实现：…」时转为「接口待实现：@/api/user.<fn>」 */
+function userApiError(e: unknown, fn: string): string {
+  const message = e instanceof Error ? e.message : String(e ?? '');
+  return message.includes('未实现') ? `接口待实现：@/api/user.${fn}` : message || `${fn} 调用失败`;
+}
+
 async function handleDelete(u: AdminUser) {
   if (!(await confirmAction(`确定删除账号「${u.realName}（${u.username}）」？该操作不可恢复。`, '删除确认'))) return;
   try {
     await deleteUser(u.id);
-  } catch {
-    return; // 失败提示已由 axios 响应拦截器统一给出
+  } catch (e: unknown) {
+    ElMessage.error(userApiError(e, 'deleteUser'));
+    return;
   }
   ElMessage.success('账号已删除');
   await load();
@@ -224,31 +281,38 @@ async function handleDelete(u: AdminUser) {
 
 /** resetPassword 返回的是初始密码字符串（非对象），直接展示 */
 async function handleReset(u: AdminUser) {
-  if (!(await confirmAction(`确定重置「${u.realName}」的登录密码？`, '重置密码'))) return;
+  if (!(await confirmAction(`确定重置「${u.realName}」的登录密码？重置后为后端初始密码。`, '重置密码'))) return;
   let pwd = '';
   try {
     pwd = await resetPassword(u.id);
-  } catch {
+  } catch (e: unknown) {
+    ElMessage.error(userApiError(e, 'resetPassword'));
     return;
   }
   ElMessage.success(`密码已重置为初始密码：${pwd}`);
 }
 
-/** enabled 为数字 1/0，不是布尔 */
+/** enabled 为数字 1/0，不是布尔；走 PUT /api/user/update 单字段提交 */
+const togglingId = ref<number | null>(null);
+
 async function toggleEnabled(u: AdminUser) {
+  if (togglingId.value === u.id) return;
   const next = u.enabled === 1 ? 0 : 1;
+  togglingId.value = u.id;
   try {
     await updateUser({ id: u.id, enabled: next });
-  } catch {
+  } catch (e: unknown) {
+    ElMessage.error(userApiError(e, 'updateUser'));
     return;
+  } finally {
+    togglingId.value = null;
   }
   u.enabled = next;
   ElMessage.success(next === 1 ? '账号已启用' : '账号已停用');
 }
 
-// ==================== 批量导入（仅 UI 骨架） ====================
+// ==================== 批量导入（后端未提供该接口，仅保留入口） ====================
 
-// 接口预留：后端未提供批量导入接口
 const importVisible = ref(false);
 const importFile = ref<{ name: string; size: number } | null>(null);
 
@@ -262,9 +326,9 @@ function openImport() {
   importFile.value = null;
 }
 
+/** 后端未提供该接口：@/api/user 无批量导入函数，故此处不发起任何请求 */
 function handleImport() {
-  // 接口预留：后端未提供批量导入接口，此处不发起请求
-  ElMessage.info('接口预留：后端未提供批量导入接口');
+  ElMessage.warning('后端未提供该接口：批量导入账号（@/api/user 无对应函数）');
 }
 
 function fmt(iso: string | null | undefined): string {
@@ -313,8 +377,12 @@ function classOf(u: AdminUser): string {
           <input v-model="keyword" class="search-input" placeholder="搜索用户名 / 姓名（后端模糊查）" @keyup.enter="reloadFirstPage" />
         </div>
         <div class="toolbar-actions">
-          <!-- 接口预留：后端未提供批量导入接口，仅保留入口 -->
-          <button class="st-btn st-btn--secondary" @click="openImport">
+          <!-- 后端未提供该接口：批量导入仅保留入口，点击后只提示不落库 -->
+          <button
+            class="st-btn st-btn--secondary"
+            title="后端未提供该接口：批量导入账号"
+            @click="openImport"
+          >
             <Upload :size="14" /> 批量导入账号
           </button>
           <button class="st-btn st-btn--primary" @click="openCreate">
@@ -330,7 +398,19 @@ function classOf(u: AdminUser): string {
         <Loader2 :size="24" class="spin" />
         <div class="st-empty__text">正在加载用户列表…</div>
       </div>
+      <!-- 加载失败：保留空态 + 错误文案 + 重试 -->
+      <div v-else-if="loadError" class="st-card__body st-empty" style="padding: 60px;">
+        <AlertCircle :size="30" :stroke-width="1.4" class="st-empty__icon" />
+        <div class="st-empty__text">{{ loadError }}</div>
+        <button class="st-btn st-btn--secondary" @click="load">
+          <RefreshCw :size="13" /> 重新加载
+        </button>
+      </div>
       <div v-else class="table-wrap">
+        <div class="table-note">
+          分页由后端提供（GET /api/user/records · pageNum / pageSize / keyword）；
+          角色筛选为当前页前端过滤 —— 后端不接受 roleName 查询参数，跨页角色统计需自行翻页。
+        </div>
         <table class="user-table">
           <thead>
             <tr>
@@ -354,8 +434,14 @@ function classOf(u: AdminUser): string {
               <td class="muted mono">{{ belongOf(u) }}</td>
               <td class="muted">{{ classOf(u) }}</td>
               <td>
-                <button class="st-text-btn status-btn" @click="toggleEnabled(u)">
-                  <CheckCircle2 v-if="u.enabled === 1" :size="13" style="color: var(--status-success);" />
+                <button
+                  class="st-text-btn status-btn"
+                  :disabled="togglingId === u.id"
+                  :title="u.enabled === 1 ? '点击停用该账号（PUT /api/user/update · enabled=0）' : '点击启用该账号（PUT /api/user/update · enabled=1）'"
+                  @click="toggleEnabled(u)"
+                >
+                  <Loader2 v-if="togglingId === u.id" :size="13" class="spin" />
+                  <CheckCircle2 v-else-if="u.enabled === 1" :size="13" style="color: var(--status-success);" />
                   <XCircle v-else :size="13" style="color: var(--text-tertiary);" />
                   {{ u.enabled === 1 ? '启用' : '停用' }}
                 </button>
@@ -368,22 +454,41 @@ function classOf(u: AdminUser): string {
               </td>
             </tr>
             <tr v-if="visibleUsers.length === 0">
-              <td colspan="8" class="muted" style="text-align: center; padding: 40px 0;">没有匹配的账号</td>
+              <td colspan="8" class="muted" style="text-align: center; padding: 40px 0;">
+                <template v-if="total === 0">暂无账号数据</template>
+                <template v-else>当前页没有匹配该角色的账号（角色筛选只在当前页生效），可切换页码或清空筛选</template>
+              </td>
             </tr>
           </tbody>
         </table>
 
-        <!-- 分页 -->
+        <!-- 分页：页码 / 每页 / 关键词搜索 -->
         <div class="pager">
           <span class="pager__total">共 {{ total }} 条 · 第 {{ pageNum }} / {{ totalPages }} 页</span>
           <div class="pager__ctrl">
+            <button class="st-btn st-btn--secondary" :disabled="pageNum <= 1" @click="goPage(1)">首页</button>
             <button class="st-btn st-btn--secondary" :disabled="pageNum <= 1" @click="goPage(pageNum - 1)">上一页</button>
             <button class="st-btn st-btn--secondary" :disabled="pageNum >= totalPages" @click="goPage(pageNum + 1)">下一页</button>
+            <button class="st-btn st-btn--secondary" :disabled="pageNum >= totalPages" @click="goPage(totalPages)">末页</button>
+            <span class="pager__label">跳至</span>
+            <el-input-number
+              v-model="pageNum"
+              :min="1"
+              :max="totalPages"
+              :controls="false"
+              size="small"
+              style="width: 68px;"
+            />
+            <span class="pager__label">页</span>
             <el-select v-model="pageSize" style="width: 96px;">
               <el-option :value="10" label="10 条/页" />
               <el-option :value="20" label="20 条/页" />
               <el-option :value="50" label="50 条/页" />
+              <el-option :value="100" label="100 条/页" />
             </el-select>
+            <button class="st-btn st-btn--ghost" @click="load">
+              <RefreshCw :size="13" /> 刷新
+            </button>
           </div>
         </div>
       </div>
@@ -395,7 +500,7 @@ function classOf(u: AdminUser): string {
         <div class="st-card panel">
           <div class="st-card__header">
             <h2 class="st-card__title">{{ editing ? '编辑账号' : '新增账号' }}</h2>
-            <p class="st-card__hint">{{ editing ? '用户名由后端主键锁定，不可修改' : '初始密码 6-32 位，后端 BCrypt 加密存储' }}</p>
+            <p class="st-card__hint">{{ editing ? '用户名由后端主键锁定，不可修改' : '初始密码 6-32 位，后端 BCrypt 加密存储；学号/班级/专业/职称在创建后二次 update 补全' }}</p>
           </div>
           <div class="st-card__body">
             <div class="form-row">
@@ -440,8 +545,13 @@ function classOf(u: AdminUser): string {
               </div>
             </div>
 
-            <!-- 学生专属 / 教师专属字段：POST /api/user/create 暂不包含这些字段，仅编辑时可维护 -->
-            <template v-if="editing && form.roleName === 'STUDENT'">
+            <!-- 学生专属 / 教师专属字段：POST /api/user/create 请求体不含这些字段，
+                 新增时先创建账号，再用返回的 id 串行调 PUT /api/user/update 补全 -->
+            <template v-if="form.roleName === 'STUDENT'">
+              <p class="two-step-hint">
+                学号 / 班级 / 专业不在 create 请求体内：创建成功后会用返回的用户 ID 追加一次
+                PUT /api/user/update 补全（两步串行，若第二步失败账号已存在，可在列表中「编辑」重试）。
+              </p>
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
                   <label class="form-label">学号</label>
@@ -457,7 +567,8 @@ function classOf(u: AdminUser): string {
                 <input v-model="form.major" class="form-input" placeholder="如：软件工程" />
               </div>
             </template>
-            <div v-if="editing && form.roleName === 'TEACHER'" class="form-item">
+            <div v-if="form.roleName === 'TEACHER'" class="form-item">
+              <p class="two-step-hint">职称同样由创建后的第二次 PUT /api/user/update 补全。</p>
               <label class="form-label">职称</label>
               <input v-model="form.title" class="form-input" placeholder="如：副教授" />
             </div>
@@ -474,13 +585,13 @@ function classOf(u: AdminUser): string {
       </div>
     </Teleport>
 
-    <!-- 批量导入弹窗（接口预留，未接后端） -->
+    <!-- 批量导入弹窗（后端未提供该接口，仅保留交互骨架） -->
     <Teleport to="body">
       <div v-if="importVisible" class="mask" @click.self="importVisible = false">
         <div class="st-card panel">
           <div class="st-card__header">
             <h2 class="st-card__title">批量导入账号</h2>
-            <p class="st-card__hint">接口预留：后端未提供批量导入接口，当前仅保留交互骨架</p>
+            <p class="st-card__hint">后端未提供该接口：@/api/user 无批量导入函数，当前仅保留界面骨架</p>
           </div>
           <div class="st-card__body">
             <p class="import-hint">规划格式：Excel（.xlsx），列为 用户名、姓名、角色、学号/班级；单次建议不超过 1000 条。</p>
@@ -492,7 +603,12 @@ function classOf(u: AdminUser): string {
             </label>
             <div class="panel-actions">
               <button class="st-btn st-btn--ghost" @click="importVisible = false">关闭</button>
-              <button class="st-btn st-btn--primary" :disabled="!importFile" @click="handleImport">开始导入</button>
+              <button
+                class="st-btn st-btn--primary"
+                :disabled="!importFile"
+                :title="importFile ? '后端未提供该接口：批量导入账号' : '请先选择账号文件'"
+                @click="handleImport"
+              >开始导入</button>
             </div>
           </div>
         </div>
@@ -574,6 +690,27 @@ function classOf(u: AdminUser): string {
 .table-wrap {
   padding: 8px 24px 18px;
   overflow-x: auto;
+}
+
+.table-note {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.two-step-hint {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
 }
 
 .user-table {

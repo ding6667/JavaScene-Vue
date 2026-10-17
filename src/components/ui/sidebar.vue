@@ -9,9 +9,8 @@ import {
   FileClock,
   FileEdit,
   GraduationCap,
-  History,
-  Home,
   LogOut,
+  Presentation,
   Settings,
   Upload,
   Users,
@@ -23,29 +22,22 @@ const router = useRouter();
 const authStore = useAuthStore();
 const isCollapsed = ref(false);
 
-/** 一级菜单分组 + 二级菜单 */
+/**
+ * 一级菜单分组 + 二级菜单
+ * 「作业批阅」分组（grading / upload 模块）与「班级管理」（class 模块）均已下线，
+ * 代码归档在根目录 deprecatedmodule/；班级下拉仍由 teach 侧的 fetchTeacherClasses 提供。
+ */
 const menuGroups = [
-  {
-    key: 'grading',
-    label: '作业批阅',
-    icon: FileEdit,
-    children: [
-      { path: '/', icon: Home, label: '开始批阅', exact: true },
-      { path: '/results', icon: FileClock, label: '批阅结果' },
-      { path: '/upload-files', icon: Upload, label: '上传管理' },
-      { path: '/history', icon: History, label: '历史任务' },
-      { path: '/classes', icon: Users, label: '班级管理' },
-    ],
-  },
   {
     key: 'teach',
     label: '智能教学',
     icon: Bot,
     children: [
       { path: '/teach/prepare', icon: GraduationCap, label: 'AI 智能备课' },
+      { path: '/teach/records', icon: FileClock, label: '备课记录' },
+      { path: '/teach/ppt', icon: Presentation, label: 'PPT 模板' },
       { path: '/teach/homework', icon: FileEdit, label: '作业发布' },
       { path: '/teach/questions', icon: Database, label: '题库管理' },
-      { path: '/teach/grading', icon: FileClock, label: '智能批改' },
       { path: '/teach/learning', icon: Users, label: '班级学情' },
       { path: '/teach/intervention', icon: Bot, label: '教学干预' },
       { path: '/teach/resources', icon: Upload, label: '资源管理' },
@@ -53,12 +45,8 @@ const menuGroups = [
   },
 ];
 
-/** 当前激活的一级分组（按路由前缀推断） */
-const activeGroupKey = computed(() => {
-  if (route.path.startsWith('/teach')) return 'teach';
-  if (route.path.startsWith('/settings')) return null;
-  return 'grading';
-});
+/** 个人设置为独立项，不归属任何分组 */
+const activeGroupKey = computed(() => (route.path.startsWith('/settings') ? null : 'teach'));
 
 /** 展开的分组（默认展开激活组；手动切换后以手动为准） */
 const expanded = ref<Record<string, boolean>>({});

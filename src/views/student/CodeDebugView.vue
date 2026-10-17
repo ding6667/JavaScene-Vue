@@ -13,9 +13,11 @@ import {
   Sprout,
   Wrench,
 } from 'lucide-vue-next';
-import { debugCode, fetchChapters } from '@/api/student';
+import { debugCode } from '@/api/study';
+import { fetchChapters } from '@/api/knowledge';
 import CodeEditor from '@/components/student/CodeEditor.vue';
-import type { Chapter, CodeDebugResult, RunStatus } from '@/types/student';
+import type { Chapter } from '@/types/knowledge';
+import type { CodeDebugResult, RunStatus } from '@/types/study';
 
 const route = useRoute();
 const router = useRouter();

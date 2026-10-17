@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { CircleAlert, CircleCheck, Loader2, Play, RotateCcw, Bug } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
-import { fetchChapter, fetchChapters, runCode } from '@/api/student';
+import { fetchChapter, fetchChapters } from '@/api/knowledge';
+import { runCode } from '@/api/study';
 import CodeEditor from '@/components/student/CodeEditor.vue';
-import type { Chapter, CodeRunResult, RunStatus } from '@/types/student';
+import type { Chapter } from '@/types/knowledge';
+import type { CodeRunResult, RunStatus } from '@/types/study';
 
 const route = useRoute();
 const router = useRouter();

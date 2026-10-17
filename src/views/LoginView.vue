@@ -2,7 +2,7 @@
 import { ref, reactive, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { GraduationCap } from 'lucide-vue-next';
+import { GraduationCap, ShieldCheck } from 'lucide-vue-next';
 import { useAuthStore } from '@/stores/auth';
 import type { AuthMode } from '@/types/auth';
 
@@ -37,6 +37,11 @@ watch(mode, () => {
 function switchMode(target: AuthMode) {
   if (mode.value === target) return;
   mode.value = target;
+}
+
+/** 管理员注册入口：已对接路由 /admin/register（注册提交逻辑在该页，见 @/api/user.adminRegister） */
+function gotoAdminRegister() {
+  router.push('/admin/register');
 }
 
 async function handleSubmit() {
@@ -147,6 +152,14 @@ async function handleSubmit() {
       >
         {{ loading ? '处理中...' : (mode === 'login' ? '登录' : '注册') }}
       </button>
+
+      <!-- 管理员注册入口：本页不实现管理员注册提交，统一跳转 /admin/register -->
+      <div class="auth-foot">
+        <button type="button" class="foot-link" @click="gotoAdminRegister">
+          <ShieldCheck :size="13" />
+          管理员注册（需系统初始化密钥）
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -326,6 +339,33 @@ async function handleSubmit() {
 .submit-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* 管理员注册入口 */
+.auth-foot {
+  margin-top: 18px;
+  display: flex;
+  justify-content: center;
+}
+
+.foot-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition), color var(--transition);
+}
+
+.foot-link:hover {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
 }
 
 /* 响应式 */

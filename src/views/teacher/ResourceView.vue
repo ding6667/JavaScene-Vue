@@ -3,7 +3,7 @@
  * 教学资源管理 —— UI 骨架页（后端无 teach/resource 模块，本文件不接 @/api、不接 pinia）
  *
  * 接口预留：POST /api/knowledge/dataset/upload/file?chapterId=、GET /api/knowledge/dataset/upload/list、
- * DELETE /api/upload/delete/{id}（后端无 teach/resource 模块）
+ * PUT /api/knowledge/content/delete?id=（upload 模块已下线，知识库文档删除后端暂无专用接口）
  *
  * 后续接入方式：上传区改为调用 dataset/upload/file 并带 chapterId；
  * 资源表数据源换成 dataset/upload/list；删除按钮接 upload/delete/{id}；
@@ -70,7 +70,7 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
           <div class="dropzone__text">点击或拖拽文件到此区域上传</div>
           <div class="dropzone__hint">
             接口预留：POST /api/knowledge/dataset/upload/file?chapterId=、GET /api/knowledge/dataset/upload/list、
-            DELETE /api/upload/delete/{id}（后端无 teach/resource 模块）
+            PUT /api/knowledge/content/delete?id=（upload 模块已下线）
           </div>
         </div>
       </div>
@@ -138,7 +138,7 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
                 <td class="cell-secondary">{{ r.uploadTime }}</td>
                 <td class="cell-desc">{{ r.description }}</td>
                 <td>
-                  <button class="st-text-btn st-text-btn--danger" disabled title="接口预留：DELETE /api/upload/delete/{id}">
+                  <button class="st-text-btn st-text-btn--danger" disabled title="接口预留：教材原文可走 PUT /api/knowledge/content/delete，知识库文档删除暂无接口">
                     <Trash2 :size="13" /> 删除
                   </button>
                 </td>

@@ -16,28 +16,8 @@ const router = createRouter({
       children: [
         {
           path: '',
-          name: 'Home',
-          component: () => import('@/views/HomeView.vue'),
-        },
-        {
-          path: 'results',
-          name: 'Results',
-          component: () => import('@/views/ResultsView.vue'),
-        },
-        {
-          path: 'upload-files',
-          name: 'UploadFiles',
-          component: () => import('@/views/UploadFilesView.vue'),
-        },
-        {
-          path: 'classes',
-          name: 'ClassManagement',
-          component: () => import('@/views/ClassManagementView.vue'),
-        },
-        {
-          path: 'history',
-          name: 'History',
-          component: () => import('@/views/HistoryView.vue'),
+          // 作业批阅模块已下线，教师端默认落地页改为智能备课
+          redirect: '/teach/prepare',
         },
         // ==================== 智能教学（教师端新功能） ====================
         {
@@ -51,9 +31,14 @@ const router = createRouter({
           component: () => import('@/views/teacher/HomeworkPublishView.vue'),
         },
         {
-          path: 'teach/grading',
-          name: 'TeachGrading',
-          component: () => import('@/views/teacher/GradingReviewView.vue'),
+          path: 'teach/ppt',
+          name: 'TeachPptTemplate',
+          component: () => import('@/views/teacher/PptTemplateView.vue'),
+        },
+        {
+          path: 'teach/records',
+          name: 'TeachPrepareRecords',
+          component: () => import('@/views/teacher/PrepareRecordView.vue'),
         },
         {
           path: 'teach/learning',

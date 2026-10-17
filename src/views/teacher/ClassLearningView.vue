@@ -2,14 +2,20 @@
 /**
  * 班级学情分析
  *
- * 真实部分：
- * - GET /api/class/records          → fetchTeacherClasses()  班级下拉
- * - GET /api/teach/class/stats      → fetchClassStats(id)    总人数 + 平均学习进度
+ * 已对接（真实请求）：
+ * - GET /api/class/records      → fetchTeacherClasses()  班级下拉
+ * - GET /api/teach/class/stats  → fetchClassStats(id)    总人数 + 平均学习进度
  *
- * 接口预留：GET /api/study/progress/get（按课程查章节进度）、后端未提供班级学情明细与干预名单接口，
- * 因此下方"知识点掌握 / 高频错题 / 学生排行 / 学情报告"均为 UI 骨架，不发起请求。
+ * 已接桩（视图逻辑已写好，只等 api 层替换 throw）：
+ * - @/api/study.fetchProgress     GET  /api/study/progress/get?courseId=   → 章节进度分布
+ * - @/api/exam.fetchWrongQuestions GET /api/exam/wrong-question/list       → 高频错题排行
+ *
+ * 后端缺口（保持空态，不用假数据）：
+ * - 知识点维度掌握率：进度接口只到章节，知识点级需后端聚合 knowledge/point/list + exam 作答记录
+ * - 学生个体排行与班级学情报告：progress / wrong-question 都只返回当前登录用户数据，
+ *   教师取不到全班明细，需后端补 per-student 接口
  */
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import {
   AlertTriangle,
   BarChart3,
@@ -20,7 +26,12 @@ import {
 } from 'lucide-vue-next';
 import { fetchClassStats, fetchTeacherClasses } from '@/api/teacher';
 import type { TeacherClass } from '@/api/teacher';
+import { fetchProgress } from '@/api/study';
+import { fetchWrongQuestions } from '@/api/exam';
+import { DEFAULT_COURSE_ID } from '@/api/knowledge';
 import type { ClassStats } from '@/types/teacher';
+import type { StudyProgress } from '@/types/study';
+import type { WrongQuestionItem } from '@/types/exam';
 
 const classes = ref<TeacherClass[]>([]);
 const classId = ref<number | null>(null);
@@ -30,15 +41,46 @@ const loading = ref(false);
 const stats = ref<ClassStats | null>(null);
 const statsError = ref('');
 
+/** 章节进度（已接桩） */
+const chapterProgress = ref<StudyProgress[]>([]);
+const chapterError = ref('');
+/** 错题列表（已接桩） */
+const wrongList = ref<WrongQuestionItem[]>([]);
+const wrongError = ref('');
+
 const TIME_OPTIONS = [
   { value: 'all', label: '全部时间' },
   { value: 'week', label: '最近一周' },
   { value: 'month', label: '最近一月' },
 ];
 
-/** 各明细模块的占位说明（UI 骨架） */
-const SHELL_NOTE =
-  '接口预留：GET /api/study/progress/get（按课程查章节进度）、后端未提供班级学情明细与干预名单接口';
+/** 章节进度柱状：按进度升序，落后的排前面 */
+const chapterBars = computed(() =>
+  chapterProgress.value
+    .slice()
+    .sort((a, b) => (a.progressRate ?? 0) - (b.progressRate ?? 0))
+    .slice(0, 12)
+    .map((p) => ({
+      key: p.id ?? p.chapterId,
+      label: p.chapterName || `章节 ${p.chapterId}`,
+      rate: Math.max(0, Math.min(100, p.progressRate ?? 0)),
+      done: p.isCompleted === 1,
+    })),
+);
+
+/** 高频错题 Top5（按错误次数） */
+const hotWrong = computed(() =>
+  wrongList.value
+    .slice()
+    .sort((a, b) => (b.wrongCount ?? 0) - (a.wrongCount ?? 0))
+    .slice(0, 5)
+    .map((w) => ({
+      key: w.id,
+      stem: w.content && w.content.trim() ? w.content.trim().slice(0, 48) : `题目 #${w.questionId}`,
+      count: w.wrongCount ?? 0,
+      meta: `题型 ${w.type ?? '—'} · 难度 ${w.difficulty ?? '—'} · ${w.mastered === 1 ? '已掌握' : '未掌握'}`,
+    })),
+);
 
 async function load() {
   if (!classId.value) return;
@@ -50,9 +92,28 @@ async function load() {
   } catch {
     stats.value = null;
     // 错误由响应拦截器统一提示
-  } finally {
-    loading.value = false;
   }
+
+  // 章节进度与错题各自独立请求，一个待实现不影响另一个
+  const [cp, wr] = await Promise.allSettled([
+    fetchProgress(DEFAULT_COURSE_ID),
+    fetchWrongQuestions(),
+  ]);
+  if (cp.status === 'fulfilled') {
+    chapterProgress.value = cp.value ?? [];
+    chapterError.value = '';
+  } else {
+    chapterProgress.value = [];
+    chapterError.value = (cp.reason as Error).message || '章节进度调用失败';
+  }
+  if (wr.status === 'fulfilled') {
+    wrongList.value = wr.value ?? [];
+    wrongError.value = '';
+  } else {
+    wrongList.value = [];
+    wrongError.value = (wr.reason as Error).message || '错题列表调用失败';
+  }
+  loading.value = false;
 }
 
 onMounted(async () => {
@@ -138,19 +199,27 @@ const progressPercent = (value: number) => {
             <BarChart3 :size="16" class="card-icon" />
             <div>
               <h2 class="st-card__title">章节学习进度分布</h2>
-              <p class="st-card__hint">{{ SHELL_NOTE }}</p>
+              <p class="st-card__hint">
+                已接桩：@/api/study.fetchProgress · GET /api/study/progress/get?courseId=，按进度升序取前 12 章
+              </p>
             </div>
-            <span class="st-badge st-badge--neutral shell-badge">UI 骨架</span>
+            <span :class="['st-badge', chapterError ? 'st-badge--warning' : 'st-badge--neutral']">
+              {{ chapterError ? '接口待实现' : '待接入' }}
+            </span>
           </div>
           <div class="st-card__body">
-            <div class="bar-chart" aria-hidden="true">
-              <div v-for="i in 8" :key="i" class="bar-col">
-                <div class="bar-placeholder"></div>
-                <span class="bar-axis">第{{ i }}章</span>
+            <div v-if="chapterBars.length" class="bar-chart">
+              <div v-for="c in chapterBars" :key="c.key" class="bar-col">
+                <div class="bar-placeholder">
+                  <div class="bar-fill" :style="{ height: c.rate + '%' }"></div>
+                </div>
+                <span class="bar-axis" :title="c.label">{{ c.label }}</span>
+                <span class="bar-value">{{ c.rate }}%</span>
               </div>
             </div>
-            <div class="st-empty" style="padding: 20px 16px;">
-              <div class="st-empty__text">等待接口返回按章节聚合的班级平均进度</div>
+            <div v-else class="st-empty" style="padding: 20px 16px;">
+              <div class="st-empty__text">{{ chapterError || '暂无章节进度数据' }}</div>
+              <div v-if="chapterError" class="st-empty__hint">待实现后本表自动填充</div>
             </div>
           </div>
         </section>
@@ -161,9 +230,12 @@ const progressPercent = (value: number) => {
             <ClipboardList :size="16" class="card-icon" />
             <div>
               <h2 class="st-card__title">知识点掌握率排行（由弱到强）</h2>
-              <p class="st-card__hint">低于 70% 建议课堂二次讲解</p>
+              <p class="st-card__hint">
+                后端缺口：进度接口只到章节粒度，知识点掌握率需后端聚合
+                knowledge/point/list 与 exam 作答记录，本页不自行推算
+              </p>
             </div>
-            <span class="st-badge st-badge--neutral shell-badge">UI 骨架</span>
+            <span class="st-badge st-badge--neutral shell-badge">无接口</span>
           </div>
           <div class="st-card__body">
             <div class="mastery-item" v-for="i in 4" :key="i" aria-hidden="true">
@@ -189,22 +261,27 @@ const progressPercent = (value: number) => {
             <AlertTriangle :size="16" class="card-icon" />
             <div>
               <h2 class="st-card__title">高频错题排行</h2>
-              <p class="st-card__hint">按班级错误人数排序</p>
+              <p class="st-card__hint">
+                已接桩：@/api/exam.fetchWrongQuestions · GET /api/exam/wrong-question/list，按错误次数取前 5
+              </p>
             </div>
-            <span class="st-badge st-badge--neutral shell-badge">UI 骨架</span>
+            <span :class="['st-badge', wrongError ? 'st-badge--warning' : 'st-badge--neutral']">
+              {{ wrongError ? '接口待实现' : '待接入' }}
+            </span>
           </div>
           <div class="st-card__body hot-list">
-            <div v-for="i in 3" :key="i" class="hot-item" aria-hidden="true">
-              <span class="hot-item__rank" :class="{ 'hot-item__rank--top': i < 2 }">{{ i }}</span>
+            <div v-for="(w, idx) in hotWrong" :key="w.key" class="hot-item">
+              <span class="hot-item__rank" :class="{ 'hot-item__rank--top': idx === 0 }">{{ idx + 1 }}</span>
               <div class="hot-item__main">
-                <div class="hot-item__stem skeleton-text">题干待接口返回</div>
-                <div class="hot-item__meta">章节 · 知识点占位</div>
+                <div class="hot-item__stem">{{ w.stem }}</div>
+                <div class="hot-item__meta">{{ w.meta }}</div>
               </div>
-              <span class="hot-item__count">—</span>
+              <span class="hot-item__count">{{ w.count }} 次</span>
             </div>
-            <div class="st-empty" style="padding: 20px 16px;">
-              <div class="st-empty__text">
-                可由 <code>GET /api/exam/wrong-question/list</code> 按学生聚合，后端暂未提供班级维度错题排行
+            <div v-if="!hotWrong.length" class="st-empty" style="padding: 20px 16px;">
+              <div class="st-empty__text">{{ wrongError || '暂无错题记录' }}</div>
+              <div v-if="wrongError" class="st-empty__hint">
+                该接口只返回当前登录学生的错题，班级维度聚合需后端补接口
               </div>
             </div>
           </div>
@@ -248,7 +325,10 @@ const progressPercent = (value: number) => {
     <div v-else class="st-card" style="margin-top: 20px;">
       <div class="st-card__body st-empty" style="padding: 80px;">
         <Users :size="40" :stroke-width="1.2" class="st-empty__icon" />
-        <div class="st-empty__text">暂无班级数据，请先在班级管理中创建班级</div>
+        <div class="st-empty__text">
+          暂无班级数据：fetchTeacherClasses 取的是 GET /api/class/records，
+          该接口不在本次 7 份模块文档内（班级管理页已下线），联调时需确认是否仍可用
+        </div>
       </div>
     </div>
   </div>
@@ -339,17 +419,39 @@ const progressPercent = (value: number) => {
 }
 
 .bar-placeholder {
+  position: relative;
   width: 100%;
-  height: 40%;
-  background: repeating-linear-gradient(
-    -45deg,
-    var(--bg-muted),
-    var(--bg-muted) 5px,
-    var(--bg-surface) 5px,
-    var(--bg-surface) 10px
-  );
+  height: 120px;
+  display: flex;
+  align-items: flex-end;
+  background: var(--bg-subtle);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  overflow: hidden;
+}
+
+/* 真实进度条：从底部填充 */
+.bar-fill {
+  width: 100%;
+  min-height: 2px;
+  background: var(--text-primary);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bar-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.st-empty__hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  max-width: 460px;
 }
 
 .bar-axis {

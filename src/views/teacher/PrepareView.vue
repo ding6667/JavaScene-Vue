@@ -5,11 +5,16 @@
  * 后端契约要点：
  * - 生成开关是字符串：'1' 开启 / '0' 关闭；
  * - 返回的教案、重难点、课后习题、上机实训均为 Markdown 文本，不再是结构化数组；
- * - pptxUrl 为 PPT 文件路径（转换失败或未开启时为 null），recordId 为备课记录追溯号。
+ * - recordId 是本次备课落库的记录 ID：
+ *   PPT 下载走 GET /api/teach/ppt/download?recordId=（真实文件流），
+ *   教案导出 Word 走 GET /api/teach/prepare/record/export?recordId=；
+ * - result.pptxUrl 只是后端返回的文件路径直链（转换失败或未开启时为 null），可能 404，以下载接口为准。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   ClipboardCheck,
+  ClipboardList,
   Download,
   FileText,
   Lightbulb,
@@ -21,10 +26,12 @@ import {
   Wrench,
 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
-import { fetchChapters } from '@/api/student';
+import { fetchChapters } from '@/api/knowledge';
+import { downloadPpt } from '@/api/teacher';
 import { generateTeachPrepare } from '@/api/teacher';
-import type { Chapter } from '@/types/student';
+import type { Chapter } from '@/types/knowledge';
 import type { TeachPrepareResult } from '@/types/teacher';
+import { renderMarkdown } from '@/utils/markdown';
 
 /** 生成开关字段名（与 TeachPrepareRequest 的字符串开关一一对应） */
 type SwitchKey = 'lessonPlan' | 'pptx' | 'keyPoints' | 'homework' | 'lab';
@@ -37,9 +44,11 @@ const SWITCHES: { key: SwitchKey; label: string }[] = [
   { key: 'lab', label: '上机实训' },
 ];
 
+const router = useRouter();
 const chapters = ref<Chapter[]>([]);
 const chapterId = ref<number | null>(null);
 const generating = ref(false);
+const pptDownloading = ref(false);
 const result = ref<TeachPrepareResult | null>(null);
 /** 本次生成实际勾选的开关，用于决定结果区展示哪几块 */
 const requested = reactive<Record<SwitchKey, boolean>>({
@@ -100,6 +109,40 @@ async function handleGenerate() {
   }
 }
 
+/** PPT 下载可用：本次勾选了 PPT 且后端返回了文件路径与记录 ID */
+const canDownloadPpt = computed(
+  () => requested.pptx && !!result.value?.pptxUrl && !!result.value?.recordId,
+);
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** GET /api/teach/ppt/download?recordId= —— 真实文件流下载，不依赖 pptxUrl 直链 */
+async function handleDownloadPpt() {
+  const r = result.value;
+  if (!r || !canDownloadPpt.value || pptDownloading.value) return;
+  pptDownloading.value = true;
+  try {
+    const blob = await downloadPpt(r.recordId);
+    saveBlob(blob, `备课PPT_第${r.chapterId}章_${r.recordId}.pptx`);
+    ElMessage.success('课堂 PPT 已下载');
+  } catch {
+    // 下载失败（403/404/业务码）已由响应拦截器统一提示
+  } finally {
+    pptDownloading.value = false;
+  }
+}
+
+function goRecords() {
+  router.push('/teach/records');
+}
+
 /** 某一 Markdown 分区是否有内容（未勾选或后端返回空串都按空处理） */
 function sectionText(key: 'lessonPlan' | 'keyPoints' | 'homework' | 'lab'): string {
   return (result.value?.[key] ?? '').trim();
@@ -113,107 +156,18 @@ function fmt(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// ==================== Markdown 渲染（备课结果为 Markdown 文本） ====================
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function renderInline(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
-    .replace(
-      /\[([^\]]+)\]\(([^)\s]+)\)/g,
-      '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>',
-    );
-}
-
-/** 轻量 Markdown → HTML：标题 / 有序无序列表 / 引用 / 代码块 / 分隔线 / 段落 */
-function renderMarkdown(src: string): string {
-  if (!src) return '';
-  const out: string[] = [];
-  let inCode = false;
-  let listTag: 'ul' | 'ol' | null = null;
-  const closeList = () => {
-    if (listTag) {
-      out.push(`</${listTag}>`);
-      listTag = null;
-    }
-  };
-  const openList = (tag: 'ul' | 'ol') => {
-    if (listTag !== tag) {
-      closeList();
-      out.push(`<${tag} class="md-list">`);
-      listTag = tag;
-    }
-  };
-
-  for (const raw of src.replace(/\r\n/g, '\n').split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('```')) {
-      closeList();
-      if (inCode) {
-        out.push('</code></pre>');
-        inCode = false;
-      } else {
-        out.push('<pre class="md-pre"><code>');
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      out.push(`${escapeHtml(raw)}\n`);
-      continue;
-    }
-    if (!line) {
-      closeList();
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) {
-      closeList();
-      const level = Math.min(heading[1].length + 3, 6);
-      out.push(`<h${level} class="md-h">${renderInline(heading[2])}</h${level}>`);
-      continue;
-    }
-    if (/^(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
-      closeList();
-      out.push('<hr class="md-hr" />');
-      continue;
-    }
-    const quote = /^>\s?(.*)$/.exec(line);
-    if (quote) {
-      closeList();
-      out.push(`<blockquote class="md-quote">${renderInline(quote[1])}</blockquote>`);
-      continue;
-    }
-    const ul = /^[-*+]\s+(.*)$/.exec(line);
-    if (ul) {
-      openList('ul');
-      out.push(`<li>${renderInline(ul[1])}</li>`);
-      continue;
-    }
-    const ol = /^\d+[.)]\s+(.*)$/.exec(line);
-    if (ol) {
-      openList('ol');
-      out.push(`<li>${renderInline(ol[1])}</li>`);
-      continue;
-    }
-    closeList();
-    out.push(`<p class="md-p">${renderInline(line)}</p>`);
-  }
-  if (inCode) out.push('</code></pre>');
-  closeList();
-  return out.join('');
-}
 </script>
 
 <template>
   <div class="st-view">
-    <header class="st-page-header">
-      <h1 class="st-page-title">AI 智能备课</h1>
-      <p class="st-page-subtitle">教学备课辅助智能体 · 按教材章节生成教案、PPT、重难点、课后习题与上机实训方案</p>
+    <header class="st-page-header page-head">
+      <div class="page-head__text">
+        <h1 class="st-page-title">AI 智能备课</h1>
+        <p class="st-page-subtitle">教学备课辅助智能体 · 按教材章节生成教案、PPT、重难点、课后习题与上机实训方案</p>
+      </div>
+      <button class="st-btn st-btn--secondary page-head__btn" @click="goRecords">
+        <ClipboardList :size="14" /> 查看备课记录
+      </button>
     </header>
 
     <!-- 配置 -->
@@ -291,16 +245,33 @@ function renderMarkdown(src: string): string {
             <span class="meta-sub">{{ selectedChapter?.title ?? `章节 ${result.chapterId}` }}</span>
             <span class="meta-sub">生成时间 {{ fmt(result.generateTime) }}</span>
           </div>
-          <a
-            v-if="result.pptxUrl"
-            class="st-btn st-btn--secondary"
-            :href="result.pptxUrl"
-            target="_blank"
-            rel="noopener"
-          >
-            <Download :size="14" /> 下载课堂 PPT
-          </a>
-          <span v-else class="meta-tip">本次未生成 PPT（未勾选或后端转换失败）</span>
+          <div class="meta-ops">
+            <button
+              class="st-btn st-btn--primary"
+              :disabled="!canDownloadPpt || pptDownloading"
+              title="GET /api/teach/ppt/download?recordId="
+              @click="handleDownloadPpt"
+            >
+              <Loader2 v-if="pptDownloading" :size="14" class="spin" />
+              <Download v-else :size="14" />
+              {{ pptDownloading ? 'PPT 下载中…' : '下载课堂 PPT' }}
+            </button>
+            <button class="st-btn st-btn--secondary" @click="goRecords">
+              <ClipboardList :size="14" /> 备课记录
+            </button>
+          </div>
+
+          <div class="meta-extra">
+            <p v-if="result.pptxUrl" class="meta-line">
+              文件路径（次要直链，可能 404，以下载接口为准）：
+              <a class="meta-path" :href="result.pptxUrl" target="_blank" rel="noopener">{{ result.pptxUrl }}</a>
+            </p>
+            <p v-else class="meta-line">本次未生成 PPT 文件（未勾选或后端转换失败），下载按钮不可用。</p>
+            <p class="meta-line">
+              本次备课结果已落库为记录，可在「备课记录」页回看五类材料全文并导出教案 Word
+              （GET /api/teach/prepare/record/export?recordId=）。
+            </p>
+          </div>
         </div>
       </div>
 
@@ -402,6 +373,22 @@ function renderMarkdown(src: string): string {
 </template>
 
 <style scoped>
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.page-head__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-head__btn {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
 .card-icon {
   color: var(--text-secondary);
   flex-shrink: 0;
@@ -504,10 +491,40 @@ function renderMarkdown(src: string): string {
   color: var(--text-tertiary);
 }
 
-.meta-tip {
-  font-size: 12.5px;
-  color: var(--text-tertiary);
+.meta-ops {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-left: auto;
+}
+
+.meta-extra {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.meta-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.meta-path {
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.meta-path:hover {
+  color: var(--text-primary);
 }
 
 /* ---------- 布局 ---------- */
