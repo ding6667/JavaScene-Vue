@@ -19,6 +19,29 @@ function renderInline(text: string): string {
     );
 }
 
+/**
+ * 流式渲染专用：闭合"半开"的代码围栏后再渲染。
+ *
+ * SSE 是按 token 推 Markdown 源文本的，一个 ``` 代码块常被劈成两半分属不同片段；
+ * 直接渲染会让后半屏内容全部被当成代码。这里统计 ``` 出现的行数，奇数说明还开着，
+ * 补一个虚拟闭合行，只影响本次渲染输出，不改动累积的原始文本。
+ */
+export function closeUnclosedFence(src: string): string {
+  if (!src) return '';
+  const fences = src.match(/^```/gm);
+  if (!fences || fences.length % 2 === 0) return src;
+  // 末尾不留裸换行，避免多渲染出一个空行
+  return `${src.replace(/\s+$/, '')}\n\`\`\``;
+}
+
+/**
+ * 流式 Markdown 实时渲染入口：累积的原始文本 → 可直接 v-html 的 HTML。
+ * 用法：每次 onMessage 只做 `raw += chunk`，把 raw 交给本函数渲染（建议用 rAF 节流）。
+ */
+export function renderMarkdownStreaming(src: string): string {
+  return renderMarkdown(closeUnclosedFence(src));
+}
+
 /** 支持：标题 / 有序无序列表 / 引用 / 代码块 / 分隔线 / 段落 / 行内强调 */
 export function renderMarkdown(src: string): string {
   if (!src) return '';

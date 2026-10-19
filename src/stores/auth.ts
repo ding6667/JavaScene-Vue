@@ -13,8 +13,6 @@ const REALNAME_KEY = 'auth_real_name';
 const ROLE_KEY = 'auth_role_name';
 const USERID_KEY = 'auth_user_id';
 
-/** @/api/user 的桩函数固定抛「未实现：...」；据此区分「接口待实现」与「会话真失效」 */
-const STUB_ERROR_MARK = '未实现';
 
 /** 会话恢复结果：成功 / 桩未实现（保留本地登录态）/ 会话失效（已清 token） */
 export type SessionRestoreState = 'idle' | 'restored' | 'pending-api' | 'expired';
@@ -34,7 +32,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   /** 会话恢复状态，供导航/端口判断与调试提示使用 */
   const sessionState = ref<SessionRestoreState>('idle');
-  /** 会话恢复失败原因（桩未实现时为「接口待实现：@/api/user.fetchUserInfo」） */
+  /** 会话恢复失败原因*/
   const sessionError = ref<string | null>(null);
   const restoring = ref(false);
 
@@ -92,12 +90,6 @@ export const useAuthStore = defineStore('auth', () => {
       return true;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e ?? '');
-      if (message.includes(STUB_ERROR_MARK)) {
-        sessionState.value = 'pending-api';
-        sessionError.value = '接口待实现：@/api/user.fetchUserInfo';
-        return false;
-      }
-      logout();
       sessionState.value = 'expired';
       sessionError.value = message || '会话已失效，请重新登录';
       return false;
