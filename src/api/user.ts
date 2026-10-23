@@ -55,23 +55,18 @@ export function toRoleName(role: string): UserRoleName {
 // ==================== 未实现 ====================
 
 /**
- * 未实现：GET /api/user/info —— 获取当前登录用户信息
- * 登录态目前只凭本地 token 推断，刷新页面无法校验会话有效性，角色/班级也拿不到。
+ * GET /api/user/info —— 获取当前登录用户信息
  */
 export async function fetchUserInfo(): Promise<AdminUser> {
-  // TODO(学生实现)：
-  // const res = await axiosInstance.get('/api/user/info');
-  // return (res.data ?? res) as AdminUser;
-  throw new Error('未实现：GET /api/user/info');
+  const res = await axiosInstance.get('/api/user/info');
+  return (res.data ?? res) as AdminUser;
 }
 
 /**
- * 未实现：POST /api/user/auth/admin/register —— 管理员注册（注册即登录，data 为 token 字符串）
+ * POST /api/user/auth/admin/register —— 管理员注册（注册即登录，data 为 token 字符串）
  * 需要系统初始化密钥 app.admin.init-key（后端配置项，非请求头）。
  */
-export async function adminRegister(_data: AdminRegisterRequest): Promise<string> {
-  // TODO(学生实现)：
-  // const res = await axiosInstance.post('/api/user/auth/admin/register', data);
-  // return String(res.data ?? res ?? '');
-  throw new Error('未实现：POST /api/user/auth/admin/register');
+export async function adminRegister(data: AdminRegisterRequest): Promise<string> {
+  const res = await axiosInstance.post('/api/user/auth/admin/register', data);
+  return String(res.data ?? res ?? '');
 }

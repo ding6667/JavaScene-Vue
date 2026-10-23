@@ -5,16 +5,19 @@
  * 口径说明：
  *   - POST /api/user/auth/admin/register {username,password,adminKey}；
  *   - 需系统初始化密钥 app.admin.init-key（后端配置项，运维现场输入，不得对学生暴露）；
- *   - 注册即登录：成功时 data 直接返回 token 字符串（不是对象），
- *     写入 authStore 持久化方法后跳 /admin/users；
+ *   - 这是「替别人开号」：成功时 data 返回新账号的 token，但**不自动顶掉操作者当前会话**。
+ *     注册成功后停在三选一界面，只有点「进入账号主页」才把会话切到新账号；
+ *   - 三选一语义：进入账号主页=切到新账号并进其主页；
+ *     返回首页=保持操作者原会话，回操作者自己的主页（原本未登录则回登录页）；
+ *     直接退出登录=清掉当前会话回登录页；
  *   - 失败（密钥错误等）由 axios 响应拦截器统一提示后端 message。
  */
-import { computed, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { ArrowLeft, Eye, EyeOff, KeyRound, Loader2, ShieldCheck } from 'lucide-vue-next';
-import { ElMessage } from 'element-plus';
-import { adminRegister } from '@/api/user';
-import { useAuthStore } from '@/stores/auth';
+import {computed, ref} from 'vue';
+import {useRouter} from 'vue-router';
+import {ArrowLeft, Eye, EyeOff, KeyRound, Loader2, ShieldCheck} from 'lucide-vue-next';
+import {ElMessage} from 'element-plus';
+import {adminRegister} from '@/api/user';
+import {useAuthStore} from '@/stores/auth';
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -31,6 +34,13 @@ const showKey = ref(false);
 const submitting = ref(false);
 /** 接口未连通时的提示（桩抛错时保留表单内容供重试） */
 const apiError = ref<string | null>(null);
+/** 新账号的 token：只在用户点「进入账号主页」时才写入会话 */
+const pendingToken = ref<string | null>(null);
+/** 注册成功后的三选一界面 */
+const registered = ref(false);
+/** 操作者（来开号的人）自己的原会话，用于「返回首页」时保持不变 */
+const operatorWasLoggedIn = ref(false);
+const operatorHome = '/admin/dashboard';
 
 const passwordValid = computed(() => {
   const len = form.value.password.length;
@@ -66,18 +76,16 @@ async function handleSubmit() {
       adminKey: form.value.adminKey.trim(),
     });
     if (!token) {
-      apiError.value = '注册接口未返回 token，请确认后端 POST /api/user/auth/admin/register 实现';
+      apiError.value = '注册失败：后端未返回 token';
       return;
     }
-    authStore.persistToken(token, form.value.username.trim());
-    ElMessage.success('管理员账号注册成功，已自动登录');
-    await router.push('/admin/users');
+    // 替别人开号：先记住操作者是否已登录，新 token 只暂存，不覆盖当前会话
+    operatorWasLoggedIn.value = authStore.isAuthenticated;
+    pendingToken.value = token;
+    registered.value = true;
+    ElMessage.success('管理员账号注册成功');
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e ?? '');
-    // 桩必定抛「未实现：...」，此处转成统一的待实现口径，其余错误已由拦截器提示
-    apiError.value = message.includes('未实现')
-      ? '接口待实现：@/api/user.adminRegister'
-      : message || '注册失败，请检查初始化密钥';
+    apiError.value = e instanceof Error ? e.message : String(e ?? '');
   } finally {
     submitting.value = false;
   }
@@ -90,6 +98,37 @@ function backToLogin() {
   }
   router.push('/login');
 }
+
+// ==================== 注册成功后的三个去向 ====================
+
+/**
+ * 进入账号主页：以【新注册账号】身份进入。
+ * 只有这一步才把 pendingToken 写入会话，完成「注册即登录」的切换。
+ */
+function goAccountHome() {
+  if (pendingToken.value) {
+    authStore.persistToken(pendingToken.value, form.value.username.trim());
+    void authStore.restoreSession();
+  }
+  router.push(operatorHome);
+}
+
+/**
+ * 返回首页：保持【操作者】原有会话不变，回操作者自己的主页。
+ * 原本就没登录（走公开路由进来）时，没有可回的主页，退回登录页。
+ */
+function goSiteHome() {
+  router.push(operatorWasLoggedIn.value ? operatorHome : '/login');
+}
+
+/** 直接退出登录：清掉当前会话（含操作者自己的登录态），回到登录页 */
+function logoutAfterRegister() {
+  authStore.logout();
+  registered.value = false;
+  pendingToken.value = null;
+  ElMessage.success('已退出登录');
+  router.push('/login');
+}
 </script>
 
 <template>
@@ -99,11 +138,12 @@ function backToLogin() {
         <ShieldCheck :size="18" class="card-icon" />
         <div>
           <h2 class="st-card__title">管理员注册</h2>
-          <p class="st-card__hint">需系统初始化密钥 app.admin.init-key · 注册成功后直接登录进入运维端</p>
+          <p class="st-card__hint">需系统初始化密钥</p>
         </div>
       </div>
 
       <div class="st-card__body">
+        <template v-if="!registered">
         <div class="form-item">
           <label class="form-label">用户名</label>
           <input v-model="form.username" class="form-input" placeholder="登录账号，如：admin_js" maxlength="32" />
@@ -146,35 +186,53 @@ function backToLogin() {
               v-model="form.adminKey"
               :type="showKey ? 'text' : 'password'"
               class="form-input"
-              placeholder="由运维现场输入的 app.admin.init-key"
+              placeholder="系统管理员初始化密钥"
             />
             <button class="icon-btn" type="button" @click="showKey = !showKey">
               <Eye v-if="!showKey" :size="14" />
               <EyeOff v-else :size="14" />
             </button>
           </div>
-          <p class="form-hint">
-            已接桩：待实现 @/api/user.adminRegister —— POST /api/user/auth/admin/register
-            {username,password,adminKey}；密钥来自后端配置 app.admin.init-key，注册即登录，data 返回 token 字符串。
+        </div>
+          <!-- 接口未连通 / 注册失败提示：保留表单内容，可直接重试 -->
+          <div v-if="apiError" class="api-error">
+            <div class="api-error__text">{{ apiError }}</div>
+            <button class="st-text-btn" type="button" @click="apiError = null">收起提示</button>
+          </div>
+
+          <button class="st-btn st-btn--primary st-btn--block" :disabled="!canSubmit" @click="handleSubmit">
+            <Loader2 v-if="submitting" :size="14" class="spin" />
+            <KeyRound v-else :size="14" />
+            {{ submitting ? '注册中…' : '注册并登录' }}
+          </button>
+
+          <button class="st-text-btn back-btn" @click="backToLogin">
+            <ArrowLeft :size="12" style="vertical-align: -2px;" />
+            {{ authStore.isAuthenticated ? '返回运维端首页' : '返回登录页' }}
+          </button>
+        </template>
+        <div v-else class="register-success">
+          <div class="register-success__icon">
+            <ShieldCheck :size="38" :stroke-width="1.4" />
+          </div>
+          <h3 class="register-success__title">注册成功</h3>
+          <p class="register-success__desc">
+            管理员账号「{{ form.username }}」已创建<br />
+            当前仍是{{ operatorWasLoggedIn ? '你本人的登录态' : '未登录状态' }}，请选择下一步操作
           </p>
+
+          <div class="register-success__actions">
+            <button class="st-btn st-btn--primary st-btn--block" @click="goAccountHome">
+              进入账号主页
+            </button>
+            <button class="st-btn st-btn--secondary st-btn--block" @click="goSiteHome">
+              {{ operatorWasLoggedIn ? '返回我的主页' : '返回登录页' }}
+            </button>
+            <button class="st-text-btn back-btn" @click="logoutAfterRegister">
+              直接退出登录
+            </button>
+          </div>
         </div>
-
-        <!-- 接口未连通 / 注册失败提示：保留表单内容，可直接重试 -->
-        <div v-if="apiError" class="api-error">
-          <div class="api-error__text">{{ apiError }}</div>
-          <button class="st-text-btn" type="button" @click="apiError = null">收起提示</button>
-        </div>
-
-        <button class="st-btn st-btn--primary st-btn--block" :disabled="!canSubmit" @click="handleSubmit">
-          <Loader2 v-if="submitting" :size="14" class="spin" />
-          <KeyRound v-else :size="14" />
-          {{ submitting ? '注册中…' : '注册并登录' }}
-        </button>
-
-        <button class="st-text-btn back-btn" @click="backToLogin">
-          <ArrowLeft :size="12" style="vertical-align: -2px;" />
-          {{ authStore.isAuthenticated ? '返回运维端首页' : '返回登录页' }}
-        </button>
       </div>
     </div>
   </div>
@@ -268,6 +326,49 @@ function backToLogin() {
 .back-btn {
   width: 100%;
   margin-top: 12px;
+}
+
+/* 注册成功态 */
+.register-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0 4px;
+}
+
+.register-success__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.register-success__title {
+  margin: 16px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  color: var(--text-primary);
+}
+
+.register-success__desc {
+  margin: 8px 0 22px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.register-success__actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .api-error {
