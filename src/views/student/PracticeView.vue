@@ -2,15 +2,15 @@
 /**
  * 分层刷题练习（数据流已接入，接口为桩时保留空态并指明位置）
  *
- * 已接桩：待实现 @/api/exam.fetchPracticeList     GET  /api/exam/question/practice/list
- * 已接桩：待实现 @/api/exam.fetchPracticeDetail   GET  /api/exam/question/practice/detail/{id}
+ * 已对接：@/api/exam.fetchPracticeList            GET  /api/exam/question/practice/list
+ * 已对接：@/api/exam.fetchPracticeDetail          GET  /api/exam/question/practice/detail/{id}
  * 已接桩：待实现 @/api/study.savePracticeDraft    POST /api/study/practice/draft（本页做 1s 节流，接口幂等）
  * 已接桩：待实现 @/api/study.submitPractice       POST /api/study/practice/submit
  * 已对接：@/api/knowledge.fetchChapters          GET  /api/knowledge/chapter/list（章节下拉）
  *
  * 说明：
- * 1. 题型 / 难度后端只下发码值（数字），中文标签在本页映射表内维护，与教师端题库页口径一致，
- *    码值语义待与后端确认；practiceMode（练习模式）同为码值，默认 1。
+ * 1. 题型 / 难度码值与后端枚举一致：题型 1=选择 2=填空 3=判断 4=程序阅读 5=编程 6=简答；
+ *    难度 1=基础 2=进阶 3=拔高；practiceMode（练习模式）默认 1。
  * 2. 错题本由后端在判错时自动写入（@/api/study.submitPractice 的副作用），前端只做提示，不重复上报。
  * 3. 支持从错题本跳转：/student/practice?questionId=xxx 直接打开指定题目。
  */
@@ -40,24 +40,21 @@ import type { PracticeSubmitResult } from '@/types/study';
 /** 草稿节流窗口（毫秒）：窗口内的连续输入合并为一次 savePracticeDraft */
 const DRAFT_THROTTLE_MS = 1000;
 
-/** 题型码值 → 中文标签（码值语义待与后端确认，与教师端题库页同一份口径） */
+/** 题型码值 → 中文标签（与后端 QuestionTypeEnum 一致） */
 const TYPE_LABELS: Record<number, string> = {
-  1: '单选题',
-  2: '多选题',
+  1: '选择题',
+  2: '填空题',
   3: '判断题',
-  4: '填空题',
-  5: '简答题',
-  6: '编程题',
-  7: '阅读程序题',
+  4: '程序阅读题',
+  5: '编程题',
+  6: '简答题',
 };
 
-/** 难度码值 → 中文标签（码值语义待与后端确认） */
+/** 难度码值 → 中文标签（与后端 QuestionDifficultyEnum 一致） */
 const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '入门',
-  2: '简单',
-  3: '中等',
-  4: '较难',
-  5: '困难',
+  1: '基础',
+  2: '进阶',
+  3: '拔高',
 };
 
 /** 练习模式码值（practiceMode，后端未给出语义，待确认） */
@@ -117,9 +114,8 @@ function difficultyLabel(v: number): string {
 
 function acceptanceText(rate: number | null | undefined): string {
   if (rate === null || rate === undefined || Number.isNaN(Number(rate))) return '—';
-  const n = Number(rate);
-  // 后端通过率口径为 0~1，兼容直接给百分数的情况
-  return `${Math.round(n <= 1 ? n * 100 : n)}%`;
+  // 后端 acceptanceRate 为百分数（0~100）
+  return `${Math.max(0, Math.min(100, Math.round(Number(rate))))}%`;
 }
 
 async function loadChapters() {
@@ -187,11 +183,12 @@ const answerKind = computed<AnswerKind>(() => {
   if (!d) return 'text';
   const t = Number(d.type);
   if (Array.isArray(d.options) && d.options.length > 0) return 'choice';
-  if (t === 6 || (typeof d.codeFramework === 'string' && d.codeFramework.trim() !== '')) return 'code';
+  if (t === 5 || (typeof d.codeFramework === 'string' && d.codeFramework.trim() !== '')) return 'code';
   return 'text';
 });
 
-const isMultiChoice = computed(() => Number(detail.value?.type) === 2);
+/** 后端 type=1 未区分单选/多选，选择题按可多选交互（只选一项也合法） */
+const isMultiChoice = computed(() => Number(detail.value?.type) === 1);
 
 /** 选项展示字母（后端 options 为字符串数组，可能自带 "A." 前缀） */
 function optionText(opt: string, idx: number): string {
@@ -490,7 +487,7 @@ onBeforeUnmount(() => {
         </div>
 
         <p class="code-value-note">
-          题型 / 难度 / 练习模式后端只下发码值（数字），本页标签映射表与教师端题库页一致，码值语义待与后端确认。
+          题型 / 难度 / 练习模式后端只下发码值（数字），本页标签映射表与后端枚举一致（题型 1~6、难度 1~3）。
         </p>
 
         <div class="filter-actions">
@@ -510,7 +507,7 @@ onBeforeUnmount(() => {
           <ListChecks :size="15" class="card-icon" />
           <div>
             <h2 class="st-card__title">题目列表</h2>
-            <p class="st-card__hint">已接桩：待实现 @/api/exam.fetchPracticeList</p>
+            <p class="st-card__hint">已对接 @/api/exam.fetchPracticeList</p>
           </div>
           <span class="list-count">共 {{ total === null ? '—' : total }} 题</span>
         </div>
@@ -574,7 +571,7 @@ onBeforeUnmount(() => {
           <BookMarked :size="15" class="card-icon" />
           <div>
             <h2 class="st-card__title">题目与作答</h2>
-            <p class="st-card__hint">已接桩：待实现 @/api/exam.fetchPracticeDetail</p>
+            <p class="st-card__hint">已对接 @/api/exam.fetchPracticeDetail</p>
           </div>
           <button
             v-if="detail"
@@ -652,7 +649,7 @@ onBeforeUnmount(() => {
             <div v-if="answerKind === 'choice'" class="answer-zone">
               <div class="block-head">
                 选择答案
-                <span v-if="isMultiChoice" class="zone-tip">多选，以英文逗号拼接提交</span>
+                <span v-if="isMultiChoice" class="zone-tip">可多选，以英文逗号拼接提交</span>
                 <span v-else class="zone-tip">单选</span>
               </div>
               <div class="options">

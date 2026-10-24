@@ -6,9 +6,11 @@
  * - GET /api/class/records      → fetchTeacherClasses()  班级下拉
  * - GET /api/teach/class/stats  → fetchClassStats(id)    总人数 + 平均学习进度
  *
- * 已接桩（视图逻辑已写好，只等 api 层替换 throw）：
- * - @/api/study.fetchProgress     GET  /api/study/progress/get?courseId=   → 章节进度分布
+ * 已对接：
  * - @/api/exam.fetchWrongQuestions GET /api/exam/wrong-question/list       → 高频错题排行
+ *
+ * 已接桩（study 模块待实现）：
+ * - @/api/study.fetchProgress      GET  /api/study/progress/get?courseId=  → 章节进度分布
  *
  * 后端缺口（保持空态，不用假数据）：
  * - 知识点维度掌握率：进度接口只到章节，知识点级需后端聚合 knowledge/point/list + exam 作答记录
@@ -68,6 +70,26 @@ const chapterBars = computed(() =>
     })),
 );
 
+const TYPE_LABELS: Record<number, string> = {
+  1: '选择题',
+  2: '填空题',
+  3: '判断题',
+  4: '程序阅读题',
+  5: '编程题',
+  6: '简答题',
+};
+
+const DIFFICULTY_LABELS: Record<number, string> = {
+  1: '基础',
+  2: '进阶',
+  3: '拔高',
+};
+
+const typeText = (value: number | null | undefined) =>
+  value == null ? '—' : TYPE_LABELS[Number(value)] ?? `题型 ${value}`;
+const difficultyText = (value: number | null | undefined) =>
+  value == null ? '—' : DIFFICULTY_LABELS[Number(value)] ?? `难度 ${value}`;
+
 /** 高频错题 Top5（按错误次数） */
 const hotWrong = computed(() =>
   wrongList.value
@@ -78,7 +100,7 @@ const hotWrong = computed(() =>
       key: w.id,
       stem: w.content && w.content.trim() ? w.content.trim().slice(0, 48) : `题目 #${w.questionId}`,
       count: w.wrongCount ?? 0,
-      meta: `题型 ${w.type ?? '—'} · 难度 ${w.difficulty ?? '—'} · ${w.mastered === 1 ? '已掌握' : '未掌握'}`,
+      meta: `题型 ${typeText(w.type)} · 难度 ${difficultyText(w.difficulty)} · ${w.mastered === 1 ? '已掌握' : '未掌握'}`,
     })),
 );
 
@@ -262,11 +284,11 @@ const progressPercent = (value: number) => {
             <div>
               <h2 class="st-card__title">高频错题排行</h2>
               <p class="st-card__hint">
-                已接桩：@/api/exam.fetchWrongQuestions · GET /api/exam/wrong-question/list，按错误次数取前 5
+                已对接 @/api/exam.fetchWrongQuestions · GET /api/exam/wrong-question/list，按错误次数取前 5
               </p>
             </div>
             <span :class="['st-badge', wrongError ? 'st-badge--warning' : 'st-badge--neutral']">
-              {{ wrongError ? '接口待实现' : '待接入' }}
+              {{ wrongError ? '加载失败' : '已对接' }}
             </span>
           </div>
           <div class="st-card__body hot-list">

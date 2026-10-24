@@ -3,7 +3,7 @@
  * 个性化教学干预 —— 已接桩页（数据来自 exam 错题本 + study 章节进度）
  *
  * 后端未提供 /api/teach/intervention/*，本页按现有接口能覆盖的范围实现：
- * - 已接桩：@/api/exam.fetchWrongQuestions      GET  /api/exam/wrong-question/list
+ * - 已对接：@/api/exam.fetchWrongQuestions      GET  /api/exam/wrong-question/list
  * - 已接桩：@/api/study.fetchProgress           GET  /api/study/progress/get?courseId=
  * - 已对接：@/api/teacher.fetchTeacherClasses    GET  /api/class/records
  *
@@ -57,9 +57,18 @@ const classes = ref<TeacherClass[]>([]);
 const wrongError = ref('');
 const progressError = ref('');
 
-/** 题型码值 → 标签（后端未给出 1~7 的语义，先按码值显示，联调后再补名称） */
+/** 题型码值 → 标签（与后端 QuestionTypeEnum 一致） */
+const TYPE_LABELS: Record<number, string> = {
+  1: '选择题',
+  2: '填空题',
+  3: '判断题',
+  4: '程序阅读题',
+  5: '编程题',
+  6: '简答题',
+};
+
 function typeLabel(type: number): string {
-  return type == null ? '—' : `题型 ${type}`;
+  return type == null ? '—' : TYPE_LABELS[Number(type)] ?? `题型 ${type}`;
 }
 
 function fmtTime(iso: string): string {
@@ -164,7 +173,7 @@ onMounted(async () => {
         <div>
           <h2 class="st-card__title">筛选条件</h2>
           <p class="st-card__hint">
-            已接桩：@/api/exam.fetchWrongQuestions（GET /api/exam/wrong-question/list）+
+            已对接 @/api/exam.fetchWrongQuestions（GET /api/exam/wrong-question/list）+
             @/api/study.fetchProgress（GET /api/study/progress/get）；两接口只返回当前登录用户数据，
             故本页为错题热点排行而非全班名单
           </p>
@@ -209,7 +218,7 @@ onMounted(async () => {
             <h2 class="st-card__title">薄弱热点（按错题聚合）</h2>
             <p class="st-card__hint">
               共 {{ weakRows.length }} 条 · 按错误次数降序 ·
-              {{ wrongError ? '错题接口待实现' : '数据源 /api/exam/wrong-question/list' }}
+              {{ wrongError ? '错题接口调用失败' : '数据源 /api/exam/wrong-question/list' }}
             </p>
           </div>
         </div>
@@ -267,7 +276,7 @@ onMounted(async () => {
                         {{ wrongError || '暂无符合条件的错题记录（也可能是筛选项过严）' }}
                       </div>
                       <div v-if="wrongError" class="st-empty__hint">
-                        已接桩：待实现 @/api/exam.fetchWrongQuestions
+                        接口：@/api/exam.fetchWrongQuestions
                       </div>
                       <button class="st-btn st-btn--secondary" :disabled="loading" @click="load">
                         <RefreshCw v-if="loading" :size="13" class="spin" />
