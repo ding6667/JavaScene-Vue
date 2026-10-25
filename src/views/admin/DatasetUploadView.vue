@@ -1,72 +1,100 @@
 <script setup lang="ts">
 /**
- * 知识库上传留痕 —— UI 骨架页（后端无对应接口）
+ * 知识库上传留痕 —— 已接后端 /api/knowledge/dataset/*
  *
- * 接口预留与口径说明：
- *  1) POST /api/knowledge/dataset/upload/file?chapterId=
- *     multipart/form-data，文件字段名为 `file`；按章节挂载上传文档。
- *  2) POST /api/knowledge/dataset/upload/text
- *     {chapterId,documentName,content,contentType,page}，手工录入教材原文/片段。
- *  3) 上述两个接口返回 {success,recordId,status,statusDesc,errorMsg}。
- *     ⚠ 受理成功 ≠ 入库成功：拿到 recordId 后只代表后端已登记任务，
- *     是否切分入库需凭 recordId 轮询列表接口确认。
- *  4) GET /api/knowledge/dataset/upload/list
- *     ?recordId&chapterId&status&uploadBy&startTime&endTime&pageNum&pageSize
- *     状态码值：0=处理中、1=成功、2=失败；错误信息 errorMsg 只在该列表里返回，
- *     因此上传后必须回查列表，不能只看上传响应。
- *  5) POST /api/knowledge/dataset/metadata/update {documentId,metadata}
- *     补充/修正文档元数据（如章节归属、页码范围），影响检索召回过滤。
- *  6) GET /api/knowledge/dataset/querySSE?keywords=
- *     流式检索（逐段返回）；现有非流式 /api/knowledge/dataset/query 已在前端接入，
- *     见 @/api/student 与 @/api 下的相关调用，可参照其返回结构。
+ *  1) POST /api/knowledge/dataset/upload/file?chapterId=   multipart，文件字段名 file
+ *  2) POST /api/knowledge/dataset/upload/text              {chapterId,documentName,content,contentType,page}
+ *     两个接口都是**异步受理**：返回 {success,recordId,status:0,statusDesc:"处理中"}，
+ *     只代表任务已入队。后端把 Dify 建档 + 索引轮询（最长 5 分钟）放到后台线程池跑，
+ *     所以这里必须凭 recordId 轮询列表接口确认最终成败——受理成功 ≠ 入库成功。
+ *  3) GET  /api/knowledge/dataset/upload/list?recordId&chapterId&status&uploadBy&startTime&endTime&pageNum&pageSize
+ *     status：0=处理中、1=成功、2=失败；errorMsg 只在列表里返回。
+ *     教师只能看到自己的记录（服务端强制覆盖 uploadBy），管理员可查全部。
+ *  4) POST /api/knowledge/dataset/metadata/update          {documentId,metadata}
  *
- * 本页不接 api / pinia：上传记录为空数组占位，表单与筛选均为 UI 局部状态。
+ * 文件类型白名单与后端 KnowledgeConstant.UPLOAD_FILE_ALLOWED_EXTENSIONS 同口径，
+ * 不在名单内（如 zip）后端直接返回明确文案，不会打到 Dify 再报 400。
  */
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { CloudUpload, FileText, History, Info, Search, TextCursorInput } from 'lucide-vue-next';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import {
+  fetchChapters,
+  fetchDatasetUploadList,
+  updateDatasetMetadata,
+  uploadDatasetFile,
+  uploadDatasetText,
+} from '@/api/knowledge';
+import type { DatasetUploadRecord } from '@/types/knowledge';
+
+/** ID 一律按字符串比对：knowledge_* 主键是雪花 ID，转 number 会丢精度 */
+type RowId = number | string;
 
 interface ChapterOption {
-  id: number;
+  id: RowId;
   title: string;
+  code: string;
 }
 
-/** 上传记录占位行（字段对齐 upload/list 响应） */
+/** 列表行视图模型：字段来自后端 DatasetUploadRecord，只做展示层改名 */
 interface UploadRecord {
-  recordId: string;
-  chapterId: number;
+  recordId: RowId;
+  chapterId: RowId;
   chapterTitle: string;
   documentName: string;
   /** 文件大小（字节） */
   fileSize: number;
-  /** 文档类型：文件上传来源后缀 / 文本录入的 contentType */
+  /** 文件类型（后端 fileType 列，如 txt/md/pdf） */
   contentType: string;
   /** 0=处理中 1=成功 2=失败 */
   status: number;
   statusDesc: string;
   segmentCount: number;
-  /** 耗时（毫秒） */
-  elapsedMs: number;
+  /** 处理耗时（秒）：finishTime - uploadTime，处理中为 0 */
+  durationSeconds: number;
   uploadBy: string;
+  /** 新增=1 / 更新=2（同名文档命中已有记录即为更新） */
+  uploadTypeDesc: string;
   errorMsg: string;
+  /** Dify 文档ID，元数据修正要用 */
+  documentId: string;
+  uploadTime: string;
 }
+
+/** 与后端白名单保持一致，避免选了才发现被拒 */
+const ALLOWED_EXT = '.txt,.md,.markdown,.pdf,.html,.htm,.docx,.xlsx,.csv,.pptx,.xml,.epub';
+
+/** 内容类型码值对齐后端 ContentTypeEnum（1=概念定义 2=例题 3=代码案例 4=习题） */
+const CONTENT_TYPES = [
+  { value: 1, label: '概念定义' },
+  { value: 2, label: '例题' },
+  { value: 3, label: '代码案例' },
+  { value: 4, label: '习题' },
+];
+
+/** 轮询：后端索引最长等 5 分钟，这里 3 秒一次、最多 110 次（多给一点余量） */
+const POLL_INTERVAL_MS = 3000;
+const POLL_MAX_TIMES = 110;
 
 const uploadMode = ref<'file' | 'text'>('file');
 
-// ---- 文件上传入口（仅本地选择状态） ----
+// ---- 章节下拉 ----
 const chapterOptions = ref<ChapterOption[]>([]);
-const uploadChapterId = ref<number | null>(null);
-const selectedFile = ref<{ name: string; size: number } | null>(null);
+const uploadChapterId = ref<RowId | null>(null);
+
+// ---- 文件上传入口（要留原始 File，不能只存名字） ----
+const fileInput = ref<HTMLInputElement | null>(null);
+const selectedFile = ref<File | null>(null);
 
 function onFileChange(e: Event) {
-  const f = (e.target as HTMLInputElement).files?.[0];
-  if (f) selectedFile.value = { name: f.name, size: f.size };
+  const f = (e.target as HTMLInputElement).files?.[0] ?? null;
+  selectedFile.value = f;
 }
 
 // ---- 文本上传入口 ----
 const textForm = ref({
   documentName: '',
-  contentType: 'TEXT',
+  contentType: 1,
   page: 1,
   content: '',
 });
@@ -84,6 +112,12 @@ const pageNum = ref(1);
 const pageSize = ref(10);
 const total = ref(0);
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
+const listLoading = ref(false);
+const submitting = ref(false);
+
+/** 轮询状态提示文案（null 表示没有在轮询） */
+const pollingText = ref<string | null>(null);
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 const STATUS_META: Record<number, { label: string; badge: string }> = {
   0: { label: '处理中', badge: 'st-badge--warning' },
@@ -97,25 +131,192 @@ const canSubmit = computed(() => {
   return textForm.value.documentName.trim() !== '' && textForm.value.content.trim() !== '';
 });
 
-function handleUpload() {
-  // 接口预留：后端未提供知识库上传接口；接通后需凭返回的 recordId 轮询 upload/list
-  ElMessage.info('接口预留：后端未提供知识库上传接口（受理成功≠入库成功，需凭 recordId 轮询状态）');
+onMounted(async () => {
+  try {
+    const list = await fetchChapters();
+    chapterOptions.value = list.map((c) => ({ id: c.id, title: c.title, code: c.chapterCode }));
+  } catch {
+    chapterOptions.value = [];
+  }
+  await loadRecords();
+});
+
+// 离开页面必须停掉轮询，否则定时器一直跑并会对已卸载的组件赋值
+onBeforeUnmount(stopPolling);
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  pollingText.value = null;
+}
+
+function toRecord(r: DatasetUploadRecord): UploadRecord {
+  return {
+    recordId: r.id,
+    chapterId: r.chapterId,
+    chapterTitle: r.chapterName,
+    documentName: r.fileName,
+    fileSize: r.fileSize,
+    contentType: r.fileType,
+    status: r.status,
+    statusDesc: r.statusDesc,
+    segmentCount: r.totalSegments,
+    durationSeconds: r.durationSeconds,
+    uploadBy: r.uploadByName,
+    uploadTypeDesc: r.uploadTypeDesc,
+    errorMsg: r.errorMsg,
+    documentId: r.documentId,
+    uploadTime: r.uploadTime,
+  };
+}
+
+/** 组装列表查询参数：空串一律不传，否则后端会把 "" 当条件 */
+function buildQuery(overrides: Record<string, unknown> = {}) {
+  const q: Record<string, unknown> = {
+    pageNum: pageNum.value,
+    pageSize: pageSize.value,
+    ...overrides,
+  };
+  if (filter.value.recordId.trim()) q.recordId = filter.value.recordId.trim();
+  if (filter.value.status !== '') q.status = Number(filter.value.status);
+  if (filter.value.uploadBy.trim()) q.uploadBy = filter.value.uploadBy.trim();
+  if (filter.value.startTime) q.startTime = `${filter.value.startTime}T00:00:00`;
+  if (filter.value.endTime) q.endTime = `${filter.value.endTime}T23:59:59`;
+  return q;
+}
+
+async function loadRecords(overrides: Record<string, unknown> = {}) {
+  listLoading.value = true;
+  try {
+    const page = await fetchDatasetUploadList(buildQuery(overrides));
+    records.value = (page.records ?? []).map(toRecord);
+    total.value = Number(page.total ?? 0);
+  } catch {
+    // 拦截器已弹错，这里保留上一次列表，不清空表格
+  } finally {
+    listLoading.value = false;
+  }
 }
 
 function handleQuery() {
-  // 接口预留：GET /api/knowledge/dataset/upload/list
-  ElMessage.info('接口预留：后端未提供上传记录列表接口');
-}
-
-function handleMetadata(row: UploadRecord) {
-  // 接口预留：POST /api/knowledge/dataset/metadata/update {documentId,metadata}
-  ElMessage.info(`接口预留：元数据更新未开放（目标文档 ${row.documentName}）`);
+  pageNum.value = 1;
+  return loadRecords();
 }
 
 function goPage(page: number) {
-  const target = Math.min(Math.max(1, page), totalPages.value);
-  pageNum.value = target;
-  // 接口预留：分页参数变化后应重新拉取 upload/list
+  pageNum.value = Math.min(Math.max(1, page), totalPages.value);
+  return loadRecords();
+}
+
+/**
+ * 凭 recordId 轮询列表，直到 status≠0。
+ * 单独查一条而不是刷整页：新记录未必在第一页（按上传时间倒序通常在，但筛选条件可能已变）。
+ */
+function pollUntilSettled(recordId: RowId) {
+  let times = 0;
+  stopPolling();
+  pollingText.value = '已受理，正在等待知识库切分入库…';
+
+  const tick = async () => {
+    times += 1;
+    try {
+      const page = await fetchDatasetUploadList({ recordId });
+      const row = (page.records ?? [])[0];
+      if (row && row.status !== 0) {
+        pollingText.value = null;
+        pollTimer = null;
+        if (row.status === 1) {
+          ElMessage.success(`入库完成：${row.fileName} 切分 ${row.totalSegments} 段`);
+        } else {
+          // 后端已把异常文档从 Dify 删掉，失败原因只在 errorMsg 里
+          ElMessage.error(`入库失败：${row.errorMsg || '未知原因'}`);
+        }
+        await loadRecords();
+        return;
+      }
+    } catch {
+      // 单次查询失败不停止轮询，等下一轮（网络抖动不该放弃追踪）
+    }
+    if (times >= POLL_MAX_TIMES) {
+      pollingText.value = null;
+      pollTimer = null;
+      ElMessage.warning('等待超过 5 分钟仍未回传结果，请稍后在列表中查看该记录状态');
+      return;
+    }
+    pollingText.value = `已受理，正在等待知识库切分入库…（第 ${times} 次查询）`;
+    pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+  };
+
+  pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+}
+
+async function handleUpload() {
+  if (uploadChapterId.value === null) {
+    ElMessage.warning('请先选择挂载章节');
+    return;
+  }
+  submitting.value = true;
+  try {
+    const ack = uploadMode.value === 'file'
+      ? await uploadDatasetFile(uploadChapterId.value, selectedFile.value as File)
+      : await uploadDatasetText({
+          chapterId: uploadChapterId.value,
+          documentName: textForm.value.documentName.trim(),
+          content: textForm.value.content,
+          contentType: textForm.value.contentType,
+          page: textForm.value.page,
+        });
+    ElMessage.success(`已受理（记录 ${ack.recordId}）：${ack.statusDesc}`);
+    // 受理完就清掉本地输入，避免同一份内容被重复提交一次
+    selectedFile.value = null;
+    if (fileInput.value) fileInput.value.value = '';
+    textForm.value.content = '';
+    await loadRecords({ recordId: ack.recordId, pageNum: 1 });
+    if (ack.status === 0) pollUntilSettled(ack.recordId);
+  } catch {
+    // 校验类失败（章节不存在/文件类型不支持/内容为空）后端给了明确文案，拦截器已弹
+  } finally {
+    submitting.value = false;
+  }
+}
+
+/**
+ * 元数据修正：后端入参是 {documentId, metadata}，metadata 为任意键值。
+ * 这里用 JSON 输入框而不是逐字段表单——Dify 侧元数据字段由知识库配置决定，
+ * 前端写死字段名反而容易和知识库不一致。
+ */
+async function handleMetadata(row: UploadRecord) {
+  if (!row.documentId) {
+    ElMessage.warning('该记录还没有 Dify 文档ID（可能入库失败），无法修正元数据');
+    return;
+  }
+  let text: string;
+  try {
+    const input = await ElMessageBox.prompt(
+      `目标文档：${row.documentName}<br/>元数据键值会追加写入 Dify（如 chapter_id / chapter_name / page）`,
+      '修正文档元数据',
+      {
+        inputValue: JSON.stringify({ chapter_id: String(row.chapterId) }),
+        inputType: 'textarea',
+        confirmButtonText: '提交',
+        cancelButtonText: '取消',
+      },
+    );
+    text = input.value;
+  } catch {
+    return; // 用户取消
+  }
+  let metadata: Record<string, unknown>;
+  try {
+    metadata = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    ElMessage.error('不是合法 JSON，示例：{"chapter_id": 88, "page": "12"}');
+    return;
+  }
+  await updateDatasetMetadata({ documentId: row.documentId, metadata });
+  ElMessage.success('元数据已提交');
 }
 
 function fmtSize(bytes: number): string {
@@ -125,9 +326,14 @@ function fmtSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function fmtElapsed(ms: number): string {
-  if (!ms) return '—';
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+/** 耗时单位是秒（后端 finish_time - upload_time），处理中还没落 finish_time 时显示占位 */
+function fmtDuration(seconds: number): string {
+  if (!seconds) return '—';
+  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function fmtTime(value: string): string {
+  return value ? value.replace('T', ' ').slice(0, 19) : '—';
 }
 </script>
 
@@ -141,12 +347,12 @@ function fmtElapsed(ms: number): string {
     <div class="du-notice">
       <Info :size="14" />
       <span>
-        接口预留：POST /api/knowledge/dataset/upload/file?chapterId=（multipart，字段 <b>file</b>）、
-        POST /api/knowledge/dataset/upload/text {chapterId,documentName,content,contentType,page}，
-        两者返回 {success,recordId,status,statusDesc,errorMsg}；<b>受理成功不等于入库成功</b>，
-        需凭 recordId 轮询 GET /api/knowledge/dataset/upload/list（status 0=处理中 1=成功 2=失败，errorMsg 仅在列表返回）。
-        元数据修正：POST /api/knowledge/dataset/metadata/update {documentId,metadata}；
-        流式检索：GET /api/knowledge/dataset/querySSE?keywords=（现有非流式 /api/knowledge/dataset/query 已在前端接入）。
+        上传接口是<b>异步受理</b>：返回 <code>{success, recordId, status:0}</code> 只代表后端已登记任务，
+        <b>受理成功不等于入库成功</b>。本页会在提交后凭 recordId 每 3 秒回查
+        <code>GET /api/knowledge/dataset/upload/list</code>（status 0=处理中 1=成功 2=失败，
+        失败原因 <code>errorMsg</code> 只在列表里返回）。后端索引最长等 5 分钟，
+        空壳（切分 0 段）、报错、超时三种情况后端会自动把异常文档从知识库删掉，无需人工清理。
+        教师只能看到自己的记录，管理员可查全部。
       </span>
     </div>
 
@@ -171,30 +377,41 @@ function fmtElapsed(ms: number): string {
         <div class="form-row">
           <div class="form-item">
             <label class="form-label">挂载章节 chapterId</label>
-            <el-select v-model="uploadChapterId" placeholder="选择章节" style="width: 100%;" no-data-text="章节数据待接口提供">
-              <el-option v-for="c in chapterOptions" :key="c.id" :label="c.title" :value="c.id" />
+            <el-select
+              v-model="uploadChapterId"
+              placeholder="选择章节"
+              style="width: 100%;"
+              filterable
+              no-data-text="章节数据加载失败"
+            >
+              <el-option
+                v-for="c in chapterOptions"
+                :key="String(c.id)"
+                :label="`${c.code} ${c.title}`"
+                :value="c.id"
+              />
             </el-select>
           </div>
           <div class="form-item form-item--sm">
-            <label class="form-label">文档类型 contentType</label>
+            <label class="form-label">内容类型 contentType</label>
             <el-select v-model="textForm.contentType" :disabled="uploadMode === 'file'" style="width: 100%;">
-              <el-option value="TEXT" label="正文" />
-              <el-option value="EXAMPLE" label="代码示例" />
-              <el-option value="DIAGRAM" label="图表说明" />
+              <el-option v-for="t in CONTENT_TYPES" :key="t.value" :value="t.value" :label="t.label" />
             </el-select>
           </div>
           <div class="form-item form-item--sm">
             <label class="form-label">起始页码 page</label>
-            <el-input-number v-model="textForm.page" :min="1" :disabled="uploadMode === 'file'" style="width: 100%;" />
+            <el-input-number v-model="textForm.page" :min="0" :disabled="uploadMode === 'file'" style="width: 100%;" />
           </div>
         </div>
 
         <!-- 文件入口 -->
         <label v-if="uploadMode === 'file'" class="upload-drop">
           <CloudUpload :size="24" style="color: var(--text-tertiary);" />
-          <span v-if="!selectedFile">点击选择教材文件（PDF / DOCX / MD / TXT）</span>
+          <span v-if="!selectedFile">
+            点击选择教材文件（txt / md / pdf / docx / xlsx / csv / pptx / html / xml / epub，单文件上限 50MB）
+          </span>
           <span v-else class="upload-file">{{ selectedFile.name }}（{{ fmtSize(selectedFile.size) }}）</span>
-          <input type="file" accept=".pdf,.docx,.md,.txt" style="display: none;" @change="onFileChange" />
+          <input ref="fileInput" type="file" :accept="ALLOWED_EXT" style="display: none;" @change="onFileChange" />
         </label>
 
         <!-- 文本入口 -->
@@ -210,8 +427,9 @@ function fmtElapsed(ms: number): string {
         </template>
 
         <div class="panel-actions">
-          <button class="st-btn st-btn--primary" :disabled="!canSubmit" @click="handleUpload">
-            <CloudUpload :size="14" /> 提交上传
+          <span v-if="pollingText" class="polling-hint">{{ pollingText }}</span>
+          <button class="st-btn st-btn--primary" :disabled="!canSubmit || submitting" @click="handleUpload">
+            <CloudUpload :size="14" /> {{ submitting ? '提交中…' : '提交上传' }}
           </button>
         </div>
       </div>
@@ -223,13 +441,20 @@ function fmtElapsed(ms: number): string {
         <History :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">上传记录</h2>
-          <p class="st-card__hint">命中 {{ records.length }} 条 · 接口预留，暂无数据来源</p>
+          <p class="st-card__hint">
+            共 {{ total }} 条 · 本页 {{ records.length }} 条{{ listLoading ? ' · 读取中…' : '' }}
+          </p>
         </div>
       </div>
       <div class="st-card__body filter-row">
         <div class="search-box">
           <Search :size="14" />
-          <input v-model="filter.recordId" class="search-input" placeholder="按 recordId 追溯" />
+          <input
+            v-model="filter.recordId"
+            class="search-input"
+            placeholder="按 recordId 追溯"
+            @keyup.enter="handleQuery"
+          />
         </div>
         <el-select v-model="filter.status" placeholder="状态" style="width: 130px;">
           <el-option value="" label="全部状态" />
@@ -237,10 +462,15 @@ function fmtElapsed(ms: number): string {
           <el-option value="1" label="成功" />
           <el-option value="2" label="失败" />
         </el-select>
-        <input v-model="filter.uploadBy" class="form-input form-input--w" placeholder="操作人 uploadBy" />
+        <input
+          v-model="filter.uploadBy"
+          class="form-input form-input--w"
+          placeholder="操作人 uploadBy（仅管理员）"
+          @keyup.enter="handleQuery"
+        />
         <input v-model="filter.startTime" class="form-input form-input--w" type="date" />
         <input v-model="filter.endTime" class="form-input form-input--w" type="date" />
-        <button class="st-btn st-btn--secondary" @click="handleQuery">查询</button>
+        <button class="st-btn st-btn--secondary" :disabled="listLoading" @click="handleQuery">查询</button>
       </div>
       <div class="table-wrap">
         <table class="du-table">
@@ -252,53 +482,43 @@ function fmtElapsed(ms: number): string {
               <th style="width: 90px;">类型</th>
               <th style="width: 90px;">状态</th>
               <th style="width: 80px;">分段数</th>
-              <th style="width: 80px;">耗时</th>
+              <th style="width: 90px;">耗时</th>
               <th style="width: 100px;">操作人</th>
+              <th style="width: 150px;">上传时间</th>
               <th style="width: 200px;">错误信息</th>
               <th style="width: 110px; text-align: right;">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in records" :key="r.recordId">
+            <tr v-for="r in records" :key="String(r.recordId)">
               <td class="muted">{{ r.chapterTitle || '—' }}</td>
               <td>
                 <div>{{ r.documentName }}</div>
-                <div class="record-id">{{ r.recordId }}</div>
+                <div class="record-id">{{ r.recordId }} · {{ r.uploadTypeDesc }}</div>
               </td>
               <td class="muted mono">{{ fmtSize(r.fileSize) }}</td>
-              <td><span class="st-badge st-badge--outline">{{ r.contentType }}</span></td>
+              <td><span class="st-badge st-badge--outline">{{ r.contentType || '—' }}</span></td>
               <td>
                 <span class="st-badge" :class="STATUS_META[r.status]?.badge ?? 'st-badge--neutral'">
                   {{ r.statusDesc || STATUS_META[r.status]?.label || '未知' }}
                 </span>
               </td>
-              <td class="mono">{{ r.segmentCount }}</td>
-              <td class="muted mono">{{ fmtElapsed(r.elapsedMs) }}</td>
+              <td class="mono">{{ r.status === 1 ? r.segmentCount : '—' }}</td>
+              <td class="muted mono">{{ fmtDuration(r.durationSeconds) }}</td>
               <td class="muted">{{ r.uploadBy || '—' }}</td>
+              <td class="muted mono">{{ fmtTime(r.uploadTime) }}</td>
               <td class="error-cell">{{ r.errorMsg || '—' }}</td>
               <td style="text-align: right;">
-                <button class="st-text-btn" @click="handleMetadata(r)">元数据</button>
+                <button class="st-text-btn" :disabled="!r.documentId" @click="handleMetadata(r)">元数据</button>
               </td>
             </tr>
-            <template v-if="records.length === 0">
-              <tr v-for="n in 4" :key="`du-ph-${n}`">
-                <td><span class="skeleton-bar skeleton-bar--sm" /></td>
-                <td><span class="skeleton-bar skeleton-bar--wide" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-                <td><span class="skeleton-bar" /></td>
-                <td><span class="skeleton-bar skeleton-bar--xs" /></td>
-              </tr>
-            </template>
           </tbody>
         </table>
         <div v-if="records.length === 0" class="st-empty">
           <History :size="36" :stroke-width="1.2" class="st-empty__icon" />
-          <div class="st-empty__text">暂无上传记录 · 接口预留：GET /api/knowledge/dataset/upload/list</div>
+          <div class="st-empty__text">
+            {{ listLoading ? '正在读取上传记录…' : '暂无上传记录 · 上传后这里能看到切分入库的全过程' }}
+          </div>
         </div>
         <div class="pager">
           <span class="pager__total">共 {{ total }} 条 · 第 {{ pageNum }} / {{ totalPages }} 页</span>
@@ -470,8 +690,22 @@ function fmtElapsed(ms: number): string {
 
 .panel-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
+}
+
+/* 轮询提示：处理中才出现，靠右按钮左侧 */
+.polling-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.du-notice code {
+  font-size: 11.5px;
+  padding: 1px 4px;
+  background: var(--bg-muted);
+  border-radius: var(--radius-sm);
 }
 
 /* 筛选 */
@@ -579,25 +813,5 @@ function fmtElapsed(ms: number): string {
 .pager__ctrl {
   display: flex;
   gap: 10px;
-}
-
-.skeleton-bar {
-  display: inline-block;
-  height: 10px;
-  width: 100%;
-  border-radius: var(--radius-sm);
-  background: var(--bg-muted);
-}
-
-.skeleton-bar--sm {
-  width: 70%;
-}
-
-.skeleton-bar--xs {
-  width: 45%;
-}
-
-.skeleton-bar--wide {
-  width: 85%;
 }
 </style>

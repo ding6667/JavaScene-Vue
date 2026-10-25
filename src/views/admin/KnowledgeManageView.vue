@@ -1,19 +1,18 @@
 <script setup lang="ts">
 /**
- * 教材知识库维护 —— 三个分区数据流已接桩
+ * 教材知识库维护 —— 三个分区全部走真实接口（26.10 前端对接）
  *
- * 真实接口：GET /api/knowledge/chapter/list（@/api/knowledge.fetchChapters，章节下拉与父级选项）
- * 已接桩：待实现 @/api/knowledge.fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）
- * 已接桩：待实现 @/api/knowledge.saveChapter（POST /api/knowledge/chapter/save
- *   {id,courseId,parentId,chapterCode,title,level,sortOrder,description,summary}）
- * 已接桩：待实现 @/api/knowledge.fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）
- * 已接桩：待实现 @/api/knowledge.saveKnowledgePoint（POST /api/knowledge/point/save
- *   {id,chapterId,name,description,difficulty,keyword,pageRef,pageOrder}）
- * 已接桩：待实现 @/api/knowledge.fetchTextbookContent（GET /api/knowledge/content/list
- *   ?chapterId&contentType&keyword&pageNum&pageSize）
- * 已接桩：待实现 @/api/knowledge.saveTextbookContent（POST /api/knowledge/content/save
- *   {id,chapterId,knowledgePointId,contentType,content,page,pageOrder,syncDify}）
- * 已接桩：待实现 @/api/knowledge.deleteTextbookContent（PUT /api/knowledge/content/delete?id=）
+ * 章节：GET /api/knowledge/chapter/list（下拉与父级选项）、GET /api/knowledge/chapter/tree（层级树）、
+ *   POST /api/knowledge/chapter/save {id,courseId,parentId,chapterCode,title,level,sortOrder,description,summary}
+ *   —— 章节树后端有 Redis 缓存（1 小时），保存后服务端整片失效，前端不用管
+ * 知识点：GET /api/knowledge/point/list?chapterId=、
+ *   POST /api/knowledge/point/save {id,chapterId,name,description,difficulty,keyword,pageRef,pageOrder}
+ * 教材原文：GET /api/knowledge/content/list?chapterId&contentType&keyword&pageNum&pageSize、
+ *   POST /api/knowledge/content/save {id,chapterId,knowledgePointId,contentType,content,page,pageOrder,syncDify}、
+ *   PUT /api/knowledge/content/delete?id=
+ *
+ * 权限：查询三类角色都可读，三个 save 与 delete 限 ADMIN（后端方法级 @PreAuthorize）。
+ * ID 口径：knowledge_* 主键是雪花 ID，一律按原值透传，不要 Number() 强转（会丢精度）。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import {
@@ -103,7 +102,7 @@ async function loadTree() {
     treeNodes.value = await fetchChapterTree(DEFAULT_COURSE_ID);
   } catch {
     treeNodes.value = [];
-    treeError.value = '接口待实现：fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）';
+    treeError.value = '章节树加载失败（请求已发出，具体原因见上方提示），可点「重新加载」重试';
   } finally {
     treeLoading.value = false;
   }
@@ -126,7 +125,7 @@ async function loadPoints() {
     points.value = await fetchKnowledgePoints(selectedChapterId.value);
   } catch {
     points.value = [];
-    pointsError.value = '接口待实现：fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）';
+    pointsError.value = '知识点加载失败（具体原因见上方提示），可重试';
   } finally {
     pointsLoading.value = false;
   }
@@ -166,8 +165,7 @@ async function loadContents() {
   } catch {
     contents.value = [];
     contentTotal.value = 0;
-    contentsError.value =
-      '接口待实现：fetchTextbookContent（GET /api/knowledge/content/list?chapterId&contentType&keyword&pageNum&pageSize）';
+    contentsError.value = '教材原文加载失败（具体原因见上方提示），可重试';
   } finally {
     contentsLoading.value = false;
   }
@@ -208,7 +206,7 @@ async function handleDelete(row: TextbookContent) {
     ElMessage.success('已提交删除');
     void loadContents();
   } catch {
-    ElMessage.warning('接口待实现：deleteTextbookContent（PUT /api/knowledge/content/delete?id=）');
+    ElMessage.error('删除失败，原因见上方提示（后端删除时会同步归档移除 Dify 文档）');
   }
 }
 
@@ -217,7 +215,8 @@ type DrawerMode = 'chapter' | 'point' | 'content';
 
 const drawerMode = ref<DrawerMode | null>(null);
 const drawerTitle = ref('');
-const editingId = ref<number | null>(null);
+/** 编辑目标记录 ID：雪花 ID 可能以字符串下发，这里不做数字强转 */
+const editingId = ref<number | string | null>(null);
 const submitting = ref(false);
 /** 教材原文分区的全局「同步 Dify」开关，作为新增/编辑表单的默认值 */
 const syncDifyDefault = ref(true);
@@ -296,7 +295,7 @@ function openChapterEdit(node: ChapterTreeNode) {
   drawerTitle.value = `编辑 · ${DRAWER_TITLES.chapter}`;
 }
 
-/** 章节树未实现时，用已对接的章节列表行进入同一套编辑表单 */
+/** 章节树加载失败或该章不在树上时，用已对接的章节列表行进入同一套编辑表单（兜底入口） */
 function editChapterFromList(c: Chapter) {
   openChapterEdit({
     id: c.id,
@@ -346,12 +345,12 @@ const canSubmit = computed(() => {
   return !!drawerForm.content.trim() && !!selectedChapterId.value;
 });
 
-/** 弹窗标题下的接口提示（保留路径信息，便于学生定位要替换的桩） */
+/** 弹窗标题下的接口提示：保存会走哪个后端接口，出问题时便于定位 */
 const drawerHint = computed(() => {
   const mode = drawerMode.value;
   if (!mode) return '';
-  const { fn, api } = DRAWER_PATHS[mode];
-  return `已接桩：待实现 @/api/knowledge.${fn} · ${api}`;
+  const { api } = DRAWER_PATHS[mode];
+  return `提交到 @/api/knowledge · ${api}`;
 });
 
 /** 保存（已接桩：saveChapter / saveKnowledgePoint / saveTextbookContent） */
@@ -410,7 +409,9 @@ async function submitDrawer() {
       void loadContents();
     }
   } catch {
-    ElMessage.warning(`接口待实现：${DRAWER_PATHS[mode].fn}（${DRAWER_PATHS[mode].api}）`);
+    // 拦截器已经把后端原因弹出来了（如章节不存在、层级冲突、内容类型越界），
+    // 这里只补一句上下文，保持弹窗打开让用户改完再试
+    ElMessage.error(`${DRAWER_TITLES[mode]}保存失败，请按上方提示修正后重试`);
   } finally {
     submitting.value = false;
   }
@@ -441,7 +442,7 @@ onMounted(() => {
       <span>
         本页三个分区已按 @/api/knowledge 的桩函数接通：章节树 fetchChapterTree、章节保存 saveChapter、
         知识点 fetchKnowledgePoints / saveKnowledgePoint、原文 fetchTextbookContent / saveTextbookContent /
-        deleteTextbookContent。桩未实现时各区显示「接口待实现」空态，可用「重新加载」重试；
+        deleteTextbookContent。加载失败时各区显示错误空态，可用「重新加载」重试；
         顶部章节下拉与父级选项来自已对接的 GET /api/knowledge/chapter/list。
       </span>
     </div>
@@ -490,7 +491,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">一、章节目录</h2>
           <p class="st-card__hint">
-            已接桩：待实现 @/api/knowledge.fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）·
+            已对接 @/api/knowledge.fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）·
             saveChapter（POST /api/knowledge/chapter/save
             {id,courseId,parentId,chapterCode,title,level,sortOrder,description,summary}）
           </p>
@@ -571,7 +572,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">二、知识点</h2>
           <p class="st-card__hint">
-            已接桩：待实现 @/api/knowledge.fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）·
+            已对接 @/api/knowledge.fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）·
             saveKnowledgePoint（POST /api/knowledge/point/save
             {id,chapterId,name,description,difficulty,keyword,pageRef,pageOrder}）
           </p>
@@ -639,7 +640,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">三、教材原文</h2>
           <p class="st-card__hint">
-            已接桩：待实现 @/api/knowledge.fetchTextbookContent（GET /api/knowledge/content/list
+            已对接 @/api/knowledge.fetchTextbookContent（GET /api/knowledge/content/list
             ?chapterId&contentType&keyword&pageNum&pageSize）· saveTextbookContent（POST /api/knowledge/content/save
             {id,chapterId,knowledgePointId,contentType,content,page,pageOrder,syncDify}）·
             deleteTextbookContent（PUT /api/knowledge/content/delete?id=）

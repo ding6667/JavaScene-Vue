@@ -259,6 +259,17 @@ const historyItems = ref<QaHistoryItem[]>([]);
 const loadingHistory = ref(false);
 const historyError = ref('');
 const historyPageNum = ref(1);
+
+/**
+ * 只看当前会话：后端在带 sessionId 时按 round_no 升序返回，正好还原这一次完整对话；
+ * 关掉则按时间倒序看本人全部历史。两种排序口径都是后端定的，前端不自己排。
+ */
+const onlyCurrentSession = ref(false);
+
+function toggleSessionScope() {
+  onlyCurrentSession.value = !onlyCurrentSession.value;
+  void loadHistory(1);
+}
 const historyPageSize = ref(5);
 const historyTotal = ref(0);
 const historyTotalPages = computed(() =>
@@ -271,6 +282,8 @@ async function loadHistory(page = historyPageNum.value) {
   try {
     const res = await fetchQaHistory({
       chapterId: selectedChapter.value ?? undefined,
+      // 带上 sessionId 时后端按 round_no 升序还原这一次完整对话；不带则是本人全部历史（按时间倒序）
+      sessionId: onlyCurrentSession.value ? qaSessionId.value : undefined,
       pageNum: page,
       pageSize: historyPageSize.value,
     });
@@ -448,6 +461,15 @@ onBeforeUnmount(() => {
               <span v-if="historyError"> · {{ historyError }}</span>
             </p>
           </div>
+          <button
+            class="st-text-btn"
+            :class="{ 'hist-scope--on': onlyCurrentSession }"
+            :disabled="loadingHistory"
+            title="只看本次会话（按轮次顺序）/ 看全部历史"
+            @click="toggleSessionScope"
+          >
+            {{ onlyCurrentSession ? '本会话' : '全部' }}
+          </button>
           <button class="st-text-btn" :disabled="loadingHistory" title="重新加载历史" @click="loadHistory(1)">
             <RefreshCw :size="13" :class="{ spin: loadingHistory }" />
           </button>
@@ -717,6 +739,21 @@ onBeforeUnmount(() => {
 }
 
 /* 历史记录 */
+/* 会话范围切换：选中态用黑底白字，与项目"选中=黑色方块"的口径一致 */
+.hist-scope--on {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+}
+
+/* 右侧栏与头部工具条都很窄，按钮文字会被竖排折成"全/部""清/空"，这里统一禁止换行 */
+.st-text-btn,
+.head-ops .st-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .hist-list {
   list-style: none;
   margin: 0;

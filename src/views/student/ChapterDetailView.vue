@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
  * 章节详情（学生端）—— 数据流已接桩
- * 已接桩：待实现 @/api/knowledge.fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）
- * 已接桩：待实现 @/api/knowledge.fetchTextbookContent（GET /api/knowledge/content/list?chapterId&contentType&keyword&pageNum&pageSize）
- * 已接桩：待实现 @/api/knowledge.fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）
+ * 已对接 @/api/knowledge.fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）
+ * 已对接 @/api/knowledge.fetchTextbookContent（GET /api/knowledge/content/list?chapterId&contentType&keyword&pageNum&pageSize）
+ * 已对接 @/api/knowledge.fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）
  * 已接桩：待实现 @/api/study.fetchProgress（GET /api/study/progress/get?courseId=，按 chapterId 匹配本章）
  * 真实接口：GET /api/knowledge/chapter/list（章节与同级切换）、POST /api/study/progress/save（进度上报）
  */
@@ -54,12 +54,12 @@ const chapter = ref<Chapter | null>(null);
 const activeTab = ref<'content' | 'cases' | 'tree' | 'summary'>('content');
 const activeCaseIdx = ref(0);
 
-/** 知识点（已接桩：待实现 GET /api/knowledge/point/list） */
+/** 知识点（已对接 GET /api/knowledge/point/list） */
 const knowledgePoints = ref<KnowledgePoint[]>([]);
 const loadingPoints = ref(false);
 const pointsError = ref('');
 
-/** 教材原文 / 案例（已接桩：待实现 GET /api/knowledge/content/list，分页） */
+/** 教材原文 / 案例（已对接 GET /api/knowledge/content/list，分页） */
 const contents = ref<TextbookContent[]>([]);
 const loadingContents = ref(false);
 const contentsError = ref('');
@@ -69,7 +69,7 @@ const contentTotal = ref(0);
 const contentFilterType = ref<number | undefined>(undefined);
 const contentKeyword = ref('');
 
-/** 章节树（已接桩：待实现 GET /api/knowledge/chapter/tree） */
+/** 章节树（已对接 GET /api/knowledge/chapter/tree） */
 const treeNodes = ref<ChapterTreeNode[]>([]);
 const loadingTree = ref(false);
 const treeError = ref('');
@@ -167,7 +167,7 @@ function findNode(nodes: ChapterTreeNode[], id: number): ChapterTreeNode | null 
 const currentNode = computed(() => findNode(treeNodes.value, chapterId.value));
 const childNodes = computed<ChapterTreeNode[]>(() => currentNode.value?.children ?? []);
 
-/** 已接桩：待实现 @/api/knowledge.fetchKnowledgePoints */
+/** 已对接 @/api/knowledge.fetchKnowledgePoints */
 async function loadKnowledgePoints() {
   loadingPoints.value = true;
   pointsError.value = '';
@@ -175,13 +175,13 @@ async function loadKnowledgePoints() {
     knowledgePoints.value = await fetchKnowledgePoints(chapterId.value);
   } catch {
     knowledgePoints.value = [];
-    pointsError.value = '接口待实现：fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）';
+    pointsError.value = '知识点加载失败，可重试';
   } finally {
     loadingPoints.value = false;
   }
 }
 
-/** 已接桩：待实现 @/api/knowledge.fetchTextbookContent（分页） */
+/** 已对接 @/api/knowledge.fetchTextbookContent（分页） */
 async function loadContents() {
   loadingContents.value = true;
   contentsError.value = '';
@@ -200,13 +200,13 @@ async function loadContents() {
     contents.value = [];
     contentTotal.value = 0;
     contentsError.value =
-      '接口待实现：fetchTextbookContent（GET /api/knowledge/content/list?chapterId&contentType&keyword&pageNum&pageSize）';
+      '教材原文加载失败，可重试';
   } finally {
     loadingContents.value = false;
   }
 }
 
-/** 已接桩：待实现 @/api/knowledge.fetchChapterTree */
+/** 已对接 @/api/knowledge.fetchChapterTree */
 async function loadTree() {
   loadingTree.value = true;
   treeError.value = '';
@@ -214,7 +214,7 @@ async function loadTree() {
     treeNodes.value = await fetchChapterTree(courseId.value);
   } catch {
     treeNodes.value = [];
-    treeError.value = '接口待实现：fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）';
+    treeError.value = '章节结构加载失败，可重试';
   } finally {
     loadingTree.value = false;
   }
@@ -396,11 +396,11 @@ watch(chapterId, reloadAll);
         </button>
       </div>
 
-      <!-- 知识点讲解（已接桩：待实现 @/api/knowledge.fetchKnowledgePoints） -->
+      <!-- 知识点讲解（已对接 @/api/knowledge.fetchKnowledgePoints） -->
       <template v-if="activeTab === 'content'">
         <div class="section-bar">
           <span class="section-bar__hint">
-            已接桩：待实现 @/api/knowledge.fetchKnowledgePoints · GET /api/knowledge/point/list?chapterId=
+            已对接 @/api/knowledge.fetchKnowledgePoints · GET /api/knowledge/point/list?chapterId=
           </span>
           <button class="st-text-btn" :disabled="loadingPoints" @click="loadKnowledgePoints">
             <RefreshCw :size="12" style="vertical-align: -2px;" /> 重新加载
@@ -454,7 +454,7 @@ watch(chapterId, reloadAll);
         </div>
       </template>
 
-      <!-- 教材原文 / 案例（已接桩：待实现 @/api/knowledge.fetchTextbookContent） -->
+      <!-- 教材原文 / 案例（已对接 @/api/knowledge.fetchTextbookContent） -->
       <template v-else-if="activeTab === 'cases'">
         <div class="st-card">
           <div class="st-card__header" style="flex-wrap: wrap;">
@@ -552,13 +552,13 @@ watch(chapterId, reloadAll);
         </div>
       </template>
 
-      <!-- 章节结构（已接桩：待实现 @/api/knowledge.fetchChapterTree） -->
+      <!-- 章节结构（已对接 @/api/knowledge.fetchChapterTree） -->
       <template v-else-if="activeTab === 'tree'">
         <div class="st-card">
           <div class="st-card__header">
             <h2 class="st-card__title">本章小节</h2>
             <p class="st-card__hint">
-              已接桩：待实现 @/api/knowledge.fetchChapterTree · GET /api/knowledge/chapter/tree?courseId=
+              已对接 @/api/knowledge.fetchChapterTree · GET /api/knowledge/chapter/tree?courseId=
             </p>
             <button class="st-text-btn tree-reload" :disabled="loadingTree" @click="loadTree">
               <RefreshCw :size="12" style="vertical-align: -2px;" /> 重新加载

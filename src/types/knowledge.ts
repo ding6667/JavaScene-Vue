@@ -2,6 +2,11 @@
  * 教材知识模块 DTO（后端 /api/knowledge/*）
  * 文件负责人：【A 教材知识库】
  * 字段一律以 openapi.json 为准；标注 TODO 的接口尚未在前端接入，类型先冻结好供实现方直接引用。
+ *
+ * ID 口径（实现时补的说明）：knowledge_* 主键是雪花 ID（19 位，docs/sql/table.sql 里
+ * `id bigint not null` 且无 auto_increment），超过 JS Number 安全整数上限 2^53。
+ * 所以 ID 一律按"number | string"透传，禁止 Number(id) 强转，比较时用 String(a) === String(b)。
+ * 数字位是历史数据（SQL 脚本里的小 id），字符串位是后端把 Long 以字符串下发后的值，两种都要能走通。
  */
 
 import type { PageResponse } from './index';
@@ -34,12 +39,12 @@ export interface ChapterTreeNode {
   children: ChapterTreeNode[];
 }
 
-/** POST /api/knowledge/chapter/save 请求体 —— TODO 待接 */
+/** POST /api/knowledge/chapter/save 请求体 */
 export interface ChapterSaveRequest {
   /** 为空表示新增 */
-  id?: number;
-  courseId: number;
-  parentId?: number;
+  id?: number | string;
+  courseId: number | string;
+  parentId?: number | string;
   chapterCode: string;
   title: string;
   level: number;
@@ -62,10 +67,10 @@ export interface KnowledgePoint {
   updateTime: string;
 }
 
-/** POST /api/knowledge/point/save 请求体 —— TODO 待接 */
+/** POST /api/knowledge/point/save 请求体 */
 export interface KnowledgePointSaveRequest {
-  id?: number;
-  chapterId: number;
+  id?: number | string;
+  chapterId: number | string;
   name: string;
   description?: string;
   difficulty?: number;
@@ -92,16 +97,16 @@ export interface TextbookContent {
   createTime: string;
 }
 
-/** POST /api/knowledge/content/save 请求体 —— TODO 待接 */
+/** POST /api/knowledge/content/save 请求体 */
 export interface TextbookContentSaveRequest {
-  id?: number;
-  chapterId: number;
-  knowledgePointId?: number;
+  id?: number | string;
+  chapterId: number | string;
+  knowledgePointId?: number | string;
   contentType?: number;
   content: string;
   page?: number;
   pageOrder?: number;
-  /** 是否同步写入 Dify 知识库 */
+  /** 是否同步写入 Dify 知识库（后端默认 true，传 false 只落本地） */
   syncDify?: boolean;
 }
 
@@ -122,13 +127,14 @@ export interface QuestionWeight {
   isActive: boolean;
 }
 
-/** POST /api/knowledge/weight/save|batch 元素 —— TODO 待接 */
+/** POST /api/knowledge/weight/save|batch 元素 */
 export interface QuestionWeightSaveRequest {
-  chapterId: number;
-  knowledgePointId: number;
+  chapterId: number | string;
+  knowledgePointId: number | string;
   weight: number;
   baseQuestionCount?: number;
   maxQuestionCount?: number;
+  /** 难度分布："易,中,难" 三段百分比，如 "30,50,20"（备课智能体原样取用） */
   difficultyDistribution?: string;
   isActive?: boolean;
 }
@@ -163,9 +169,9 @@ export interface DatasetUploadAck {
   errorMsg: string | null;
 }
 
-/** POST /api/knowledge/dataset/upload/text 请求体 —— TODO 待接 */
+/** POST /api/knowledge/dataset/upload/text 请求体 */
 export interface DatasetUploadTextRequest {
-  chapterId: number;
+  chapterId: number | string;
   documentName: string;
   content: string;
   /** 1=概念定义 2=例题 3=代码案例 4=习题 */
@@ -196,13 +202,14 @@ export interface DatasetUploadRecord {
   durationSeconds: number;
 }
 
-/** GET /api/knowledge/dataset/upload/list 查询参数 —— TODO 待接 */
+/** GET /api/knowledge/dataset/upload/list 查询参数 */
 export interface DatasetUploadQuery {
-  recordId?: number;
-  chapterId?: number;
+  /** 异步上传的轮询键：受理接口返回它，凭它查最终成败 */
+  recordId?: number | string;
+  chapterId?: number | string;
   status?: number;
-  uploadBy?: number;
-  /** 时间格式以联调为准（后端为 date-time 字符串） */
+  uploadBy?: number | string;
+  /** 时间格式 yyyy-MM-dd'T'HH:mm:ss（后端 LocalDateTime，带 .SSS 也能解析） */
   startTime?: string;
   endTime?: string;
   pageNum?: number;
