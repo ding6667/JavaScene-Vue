@@ -1,13 +1,11 @@
 <template>
   <div class="app">
-    <PortalSwitcher />
     <router-view />
   </div>
 </template>
 
 <script setup lang="ts">
-// App.vue - 极简根组件（含全局三端切换滑块，固定右上角）
-import PortalSwitcher from '@/components/PortalSwitcher.vue';
+// App.vue - 极简根组件：只负责挂载路由出口，三端入口由登录后的选端页决定
 </script>
 
 <style>

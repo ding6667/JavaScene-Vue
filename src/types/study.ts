@@ -10,14 +10,14 @@
  */
 export type RunStatus = 'AC' | 'WA' | 'TLE' | 'MLE' | 'RE' | 'CE' | 'OLE' | 'SV' | 'SE';
 
-/** POST /api/study/code/run 与 /code/debug 请求体（已对接） */
+/** POST /api/study/code/run 与 /code/debug 请求体（code/run 与 code/debug 共用） */
 export interface CodeRunRequest {
   codeContent: string;
   chapterId?: number;
   questionId?: number;
 }
 
-/** 代码运行结果（已对接）；调试模式出参与之同构 */
+/** 代码运行结果；调试模式出参与之同构 */
 export interface CodeRunResult {
   runId: number;
   status: RunStatus;
@@ -53,10 +53,10 @@ export interface CodeRunResult {
   learningSuggestion: string;
 }
 
-/** POST /api/study/code/debug 出参（已对接） */
+/** POST /api/study/code/debug 出参，与 code/run 同构 */
 export type CodeDebugResult = CodeRunResult;
 
-/** POST /api/study/progress/save 请求体（已对接，用户身份由登录态推断，不传 userId） */
+/** POST /api/study/progress/save 请求体（用户身份由登录态推断，不传 userId） */
 export interface ProgressSaveRequest {
   chapterId: number;
   /** 完成度 0-100 */
@@ -67,7 +67,7 @@ export interface ProgressSaveRequest {
   isCompleted: number;
 }
 
-/** GET /api/study/progress/get 返回项 —— TODO 待接 */
+/** GET /api/study/progress/get 返回项 */
 export interface StudyProgress {
   id: number;
   chapterId: number;
@@ -79,7 +79,7 @@ export interface StudyProgress {
   updateTime: string;
 }
 
-/** POST /api/study/practice/submit 请求体 —— TODO 待接 */
+/** POST /api/study/practice/submit 请求体 */
 export interface PracticeSubmitRequest {
   questionId: number;
   /** 作答内容：客观题为选项/文本，编程题为源码 */
@@ -92,7 +92,7 @@ export interface PracticeSubmitRequest {
   practiceMode?: number;
 }
 
-/** 提交结果的单用例执行情况 —— TODO 待接 */
+/** 提交结果的单用例执行情况 */
 export interface PracticeCaseResult {
   caseIndex: number;
   /** 1=通过 0=未通过 */
@@ -103,7 +103,7 @@ export interface PracticeCaseResult {
   errorMsg: string;
 }
 
-/** POST /api/study/practice/submit 返回 —— TODO 待接 */
+/** POST /api/study/practice/submit 返回 */
 export interface PracticeSubmitResult {
   practiceId: number;
   runId: number;
@@ -123,7 +123,7 @@ export interface PracticeSubmitResult {
 }
 
 /**
- * POST /api/study/practice/draft 请求体 —— TODO 待接
+ * POST /api/study/practice/draft 请求体
  * openapi 未声明该接口的 body（文档缺口），按语义先占位，实现时与后端确认字段名。
  */
 export interface PracticeDraftRequest {
@@ -133,13 +133,13 @@ export interface PracticeDraftRequest {
 }
 
 /**
- * GET /api/study/practice/detail?questionId= 返回 —— TODO 待接
+ * GET /api/study/practice/detail?questionId= 返回
  * openapi 该接口 data 被声明成 string（文档缺口），实现时按后端真实 JSON 修正本类型。
  */
 export type PracticeRecordDetail = unknown;
 
 /**
- * GET /api/study/code/record/list 列表项 —— TODO 待接
+ * GET /api/study/code/record/list 列表项
  * 后端 schema 里 records 元素为空对象（文档缺口），按"列表不含代码大字段"的描述
  * 先以运行结果的可选形态占位，联调后按真实字段收紧。
  */
@@ -147,7 +147,7 @@ export interface CodeRecordItem extends Partial<CodeRunResult> {
   codeContent?: string;
 }
 
-/** GET /api/study/code/record/list 查询参数（可按 chapterId / questionId 筛选）—— TODO 待接 */
+/** GET /api/study/code/record/list 查询参数（可按 chapterId / questionId 筛选） */
 export interface CodeRecordQuery {
   chapterId?: number;
   questionId?: number;
@@ -156,7 +156,7 @@ export interface CodeRecordQuery {
 }
 
 /**
- * GET /api/study/code/record/detail?recordId= 返回 —— TODO 待接
+ * GET /api/study/code/record/detail?recordId= 返回
  * openapi 同样把 data 声明为 string；按描述应含代码、用例明细与 AI 调试字段。
  */
 export type CodeRecordDetail = unknown;

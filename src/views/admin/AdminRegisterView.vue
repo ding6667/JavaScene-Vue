@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 管理员注册（已接桩：待实现 @/api/user.adminRegister）
+ * 管理员注册（POST /api/user/auth/admin/register）
  *
  * 口径说明：
  *   - POST /api/user/auth/admin/register {username,password,adminKey}；
@@ -18,9 +18,11 @@ import {ArrowLeft, Eye, EyeOff, KeyRound, Loader2, ShieldCheck} from 'lucide-vue
 import {ElMessage} from 'element-plus';
 import {adminRegister} from '@/api/user';
 import {useAuthStore} from '@/stores/auth';
+import {useLogout} from '@/composables/useLogout';
 
 const router = useRouter();
 const authStore = useAuthStore();
+const { logout } = useLogout();
 
 const form = ref({
   username: '',
@@ -121,13 +123,11 @@ function goSiteHome() {
   router.push(operatorWasLoggedIn.value ? operatorHome : '/login');
 }
 
-/** 直接退出登录：清掉当前会话（含操作者自己的登录态），回到登录页 */
-function logoutAfterRegister() {
-  authStore.logout();
+/** 直接退出登录：吊销当前会话（含操作者自己的登录态）并回到登录页 */
+async function logoutAfterRegister() {
   registered.value = false;
   pendingToken.value = null;
-  ElMessage.success('已退出登录');
-  router.push('/login');
+  await logout();
 }
 </script>
 

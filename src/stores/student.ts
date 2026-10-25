@@ -6,9 +6,9 @@ import type { StudyProgress } from '@/types/study';
 /**
  * 学生端状态管理
  *
- * 真实数据源只有两个：
- * - POST /api/study/progress/save  已对接（@/api/study.saveProgress）
- * - GET  /api/study/progress/get   已接桩：待实现 @/api/study.fetchProgress
+ * 数据源：
+ * - POST /api/study/progress/save  写入章节进度
+ * - GET  /api/study/progress/get   读取当前课程的全部章节进度
  *
  * 进度只存一份：服务端 progress/get 结果缓存在 progressMap，
  * 本会话内 save 上报的完成度作为覆盖层放在 savedChapters（会话内回显，优先于服务端值），
@@ -19,7 +19,7 @@ import type { StudyProgress } from '@/types/study';
 /** progressMap（服务端）与 savedChapters（本会话）合并后的读取口径 */
 export interface ChapterProgressView {
   chapterId: number;
-  /** 章节名（progress/get 下发，桩未实现时为 null） */
+  /** 章节名，由 progress/get 下发；服务端无记录时为 null */
   chapterName: string | null;
   /** 完成度 0-100 */
   progressRate: number;
@@ -38,7 +38,7 @@ export const useStudentStore = defineStore('student', () => {
   /** 已成功加载的课程 ID；null 表示尚未取到数据 */
   const loadedCourseId = ref<number | null>(null);
   const progressLoading = ref(false);
-  /** 最近一次读取失败的原因（已接桩时为「接口待实现」），供页面直接展示 */
+  /** 最近一次读取失败的原因，供页面直接展示 */
   const progressError = ref<string | null>(null);
 
   /** 本次会话内已上报进度的章节，用于按钮态回显 + 覆盖服务端旧值 */
@@ -47,9 +47,9 @@ export const useStudentStore = defineStore('student', () => {
   const progressList = computed<StudyProgress[]>(() => Object.values(progressMap.value));
 
   /**
-   * 读取当前课程章节进度（已接桩：待实现 @/api/study.fetchProgress）
+   * 读取当前课程章节进度（GET /api/study/progress/get）
    * 同一课程默认只请求一次，force=true 强制重取。
-   * 失败时清空缓存并抛出，由调用方展示空态与「接口待实现」提示。
+   * 失败时清空缓存并向上抛出，由调用方展示空态与错误原因。
    */
   async function loadProgress(courseId: number, force = false): Promise<StudyProgress[]> {
     if (!force && loadedCourseId.value === courseId) return progressList.value;
@@ -67,7 +67,7 @@ export const useStudentStore = defineStore('student', () => {
     } catch (e) {
       progressMap.value = {};
       loadedCourseId.value = null;
-      progressError.value = describeProgressError(e);
+      progressError.value = e instanceof Error ? e.message : String(e);
       throw e;
     } finally {
       progressLoading.value = false;
@@ -132,9 +132,3 @@ export const useStudentStore = defineStore('student', () => {
     clear,
   };
 });
-
-/** 桩函数抛错与真实请求失败的统一文案 */
-function describeProgressError(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e);
-  return /未实现/.test(msg) ? '接口待实现：@/api/study.fetchProgress' : `接口调用失败：@/api/study.fetchProgress（${msg}）`;
-}

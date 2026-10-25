@@ -151,6 +151,7 @@ onUnmounted(() => {
 <style scoped>
 .chat-widget {
   position: fixed;
+  /* 三端都挂这个浮窗，页面弹窗遮罩一律用 1500（Element Plus 对话框 2000）才不会被它压住 */
   z-index: 1000;
   user-select: none;
 }

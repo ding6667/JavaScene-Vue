@@ -23,3 +23,12 @@ deprecatedmodule/ —— 已下线模块归档
 
 恢复方式：把对应文件移回 src/ 同名目录，补回 router 与 sidebar 的入口即可；
 其中批阅进度与结果需改用仍在线的接口，原 /api/grading/* 与 /api/upload/* 已不可用。
+
+## PortalSwitcher —— 全局三端切换滑块（第三批下线）
+
+`components/PortalSwitcher.vue` 是挂在 App.vue 右上角的开发调试用滑块，可以无视角色在
+学生端 / 教师端 / 运维端之间随意跳转。登录改为按 JWT 角色鉴权 + 登录后选端页（`/choose-portal`）
+之后，这个入口等于绕过了路由守卫，遂从 App.vue 摘除并归档至此，src/ 下已无引用。
+
+恢复方式：文件移回 `src/components/PortalSwitcher.vue`，在 App.vue 的 `.app` 里重新引入
+`<PortalSwitcher />` 即可；组件无外部依赖，样式自带 scoped。仅在本地调试时启用。

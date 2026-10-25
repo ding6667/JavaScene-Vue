@@ -812,7 +812,7 @@ async function handleClose(hw: PublishedHomework) {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  z-index: 1500;
   padding: 24px;
 }
 

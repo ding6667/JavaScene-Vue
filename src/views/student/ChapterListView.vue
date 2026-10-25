@@ -1,13 +1,13 @@
 <script setup lang="ts">
 /**
  * 章节同步学习列表（学生端）
- * 真实接口：GET /api/knowledge/chapter/list（@/api/knowledge.fetchChapters）
- * 已接桩：待实现 @/api/study.fetchProgress（GET /api/study/progress/get?courseId=）
- *   —— 每个章节按 chapterId 匹配，渲染 progressRate / isCompleted / lastStudyTime，
- *      顶部汇总卡由同一份进度数组聚合（已完成数 / 总数、平均进度）。
- * 说明：知识点数与案例数需按章逐条调用 fetchKnowledgePoints / fetchTextbookContent（N+1 请求），
- *   列表页不做，改由详情页展示（已接桩：待实现 @/api/knowledge.fetchKnowledgePoints、
- *   @/api/knowledge.fetchTextbookContent）。
+ * 数据源：
+ * - GET /api/knowledge/chapter/list?courseId   章节列表
+ * - GET /api/study/progress/get?courseId       章节进度
+ *   每个章节按 chapterId 匹配，渲染 progressRate / isCompleted / lastStudyTime，
+ *   顶部汇总卡由同一份进度数组聚合（已完成数 / 总数、平均进度）。
+ * 说明：知识点数与案例数需按章逐条调用 point/list、content/list（N+1 请求），
+ *   列表页不做，改由详情页展示。
  */
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -28,7 +28,7 @@ const router = useRouter();
 const loading = ref(true);
 const chapters = ref<Chapter[]>([]);
 
-/** 学习进度（已接桩：待实现 GET /api/study/progress/get） */
+/** 学习进度（GET /api/study/progress/get） */
 const progressList = ref<StudyProgress[]>([]);
 const loadingProgress = ref(false);
 const progressError = ref('');
@@ -100,15 +100,14 @@ async function loadChapters() {
   }
 }
 
-/** 已接桩：待实现 @/api/study.fetchProgress */
 async function loadProgress() {
   loadingProgress.value = true;
   progressError.value = '';
   try {
     progressList.value = (await fetchProgress(DEFAULT_COURSE_ID)) ?? [];
-  } catch {
+  } catch (e) {
     progressList.value = [];
-    progressError.value = '接口待实现：fetchProgress（GET /api/study/progress/get?courseId=）';
+    progressError.value = e instanceof Error ? e.message : String(e);
   } finally {
     loadingProgress.value = false;
   }
@@ -127,7 +126,7 @@ onMounted(async () => {
       <p class="st-page-subtitle">按《Java 程序设计基础》教材章节顺序学习 · 进度可上报后端</p>
     </header>
 
-    <!-- 进度概览（已接桩：待实现 @/api/study.fetchProgress，聚合自本章全部章节进度） -->
+    <!-- 进度概览：聚合自本章全部章节进度 -->
     <div class="st-card progress-card">
       <div class="st-card__body" style="padding: 18px 24px;">
         <div class="sum-row">

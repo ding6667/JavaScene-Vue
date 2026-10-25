@@ -10,16 +10,16 @@ import {
   FileEdit,
   GraduationCap,
   LogOut,
+  MonitorOff,
   Presentation,
   Settings,
   Upload,
   Users,
 } from 'lucide-vue-next';
-import { useAuthStore } from '@/stores/auth';
+import { useLogout } from '@/composables/useLogout';
 
 const route = useRoute();
 const router = useRouter();
-const authStore = useAuthStore();
 const isCollapsed = ref(false);
 
 /**
@@ -69,10 +69,8 @@ function navigate(path: string) {
   router.push(path);
 }
 
-function handleLogout() {
-  authStore.logout();
-  router.push('/login');
-}
+// 登出：先让后端吊销 token（Redis 黑名单），失败也照样清本地并回登录页
+const { loggingOut, logout, logoutAllDevices } = useLogout();
 </script>
 
 <template>
@@ -144,11 +142,15 @@ function handleLogout() {
       </ul>
     </nav>
 
-    <!-- 底部退出登录 -->
+    <!-- 底部：退出当前设备 / 吊销全部设备会话 -->
     <div class="sidebar__footer">
-      <button class="group-link group-link--logout" @click="handleLogout">
+      <button class="group-link group-link--logout" :disabled="loggingOut" @click="logout">
         <LogOut :size="16" class="nav-icon" />
         <span v-if="!isCollapsed" class="nav-label">退出登录</span>
+      </button>
+      <button class="group-link group-link--logout" :disabled="loggingOut" @click="logoutAllDevices">
+        <MonitorOff :size="16" class="nav-icon" />
+        <span v-if="!isCollapsed" class="nav-label">退出所有设备</span>
       </button>
     </div>
   </aside>
@@ -327,5 +329,15 @@ function handleLogout() {
 
 .group-link--logout:hover {
   color: var(--status-danger);
+}
+
+.group-link--logout:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  color: var(--text-tertiary);
+}
+
+.group-link--logout + .group-link--logout {
+  margin-top: 2px;
 }
 </style>

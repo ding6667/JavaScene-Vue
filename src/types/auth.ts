@@ -16,3 +16,18 @@ export interface AuthResponse {
 
 /** 认证模式 */
 export type AuthMode = 'login' | 'register';
+
+// ==================== 登出 ====================
+
+/** POST /api/user/auth/logout 请求体 */
+export interface LogoutRequest {
+  /** true = 吊销该用户全部设备会话；false = 只吊销当前 token */
+  allDevices: boolean;
+}
+
+/** POST /api/user/auth/logout 响应：data 为后端回执，前端只用作日志 */
+export interface LogoutResponse {
+  code: number;
+  message: string;
+  data?: unknown;
+}

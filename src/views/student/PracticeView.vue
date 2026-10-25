@@ -1,17 +1,18 @@
 <script setup lang="ts">
 /**
- * 分层刷题练习（数据流已接入，接口为桩时保留空态并指明位置）
+ * 分层刷题练习
  *
- * 已接桩：待实现 @/api/exam.fetchPracticeList     GET  /api/exam/question/practice/list
- * 已接桩：待实现 @/api/exam.fetchPracticeDetail   GET  /api/exam/question/practice/detail/{id}
- * 已接桩：待实现 @/api/study.savePracticeDraft    POST /api/study/practice/draft（本页做 1s 节流，接口幂等）
- * 已接桩：待实现 @/api/study.submitPractice       POST /api/study/practice/submit
- * 已对接：@/api/knowledge.fetchChapters          GET  /api/knowledge/chapter/list（章节下拉）
+ * 数据源：
+ * - GET  /api/exam/question/practice/list      题目列表（不含答案）
+ * - GET  /api/exam/question/practice/detail/{id}  单题详情与示例用例
+ * - POST /api/study/practice/draft             草稿（接口幂等，本页做 1s 节流合并连续输入）
+ * - POST /api/study/practice/submit            正式提交（判题 + 调调试智能体 + 写运行记录）
+ * - GET  /api/knowledge/chapter/list           章节下拉
  *
  * 说明：
  * 1. 题型 / 难度后端只下发码值（数字），中文标签在本页映射表内维护，与教师端题库页口径一致，
  *    码值语义待与后端确认；practiceMode（练习模式）同为码值，默认 1。
- * 2. 错题本由后端在判错时自动写入（@/api/study.submitPractice 的副作用），前端只做提示，不重复上报。
+ * 2. 错题本由后端在判错时自动写入（practice/submit 的副作用），前端只做提示，不重复上报。
  * 3. 支持从错题本跳转：/student/practice?questionId=xxx 直接打开指定题目。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';

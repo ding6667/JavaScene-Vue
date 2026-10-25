@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { GraduationCap, ShieldCheck } from 'lucide-vue-next';
@@ -34,6 +34,15 @@ watch(mode, () => {
   formRef.value?.clearValidate();
 });
 
+/** 被拦截器踢回登录页时带上原因，这里只负责把话说明白 */
+onMounted(() => {
+  const reason = route.query.reason as string | undefined;
+  if (reason === 'expired') ElMessage.warning('登录已过期，请重新登录');
+  else if (reason === 'forbidden') ElMessage.error('检测到越权访问，已强制退出');
+  // 改密码 / 封号 / 服务端主动吊销：用户是「突然」被下线的，必须给个说法
+  else if (reason === 'kicked') ElMessage.warning('账号状态已变更，请重新登录');
+});
+
 function switchMode(target: AuthMode) {
   if (mode.value === target) return;
   mode.value = target;
@@ -42,6 +51,19 @@ function switchMode(target: AuthMode) {
 /** 管理员注册入口：已对接路由 /admin/register（注册提交逻辑在该页，见 @/api/user.adminRegister） */
 function gotoAdminRegister() {
   router.push('/admin/register');
+}
+
+/**
+ * 登录后去向：redirect > 多角色选端页 > 该角色首页。
+ * 只接受站内绝对路径，`//evil.com` 这类协议相对地址一律忽略，防 open redirect。
+ */
+function resolveTarget() {
+  const redirect = route.query.redirect;
+  if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
+    return redirect;
+  }
+  if (authStore.hasMultipleRoles) return '/choose-portal';
+  return authStore.resolveHome();
 }
 
 async function handleSubmit() {
@@ -54,23 +76,15 @@ async function handleSubmit() {
 
   loading.value = true;
   try {
-    if (mode.value === 'login') {
-      const ok = await authStore.login({ ...form });
-      if (ok) {
-        ElMessage.success('登录成功');
-        const redirect = (route.query.redirect as string) || '/';
-        router.push(redirect);
-      }
-      // 失败时错误提示由响应拦截器统一渲染后端 message
-    } else {
-      const ok = await authStore.register({ ...form });
-      if (ok) {
-        // 注册成功后后端直接返回 token，直接进入主页面
-        ElMessage.success('注册成功');
-        router.push('/');
-      }
-      // 失败时错误提示由响应拦截器统一渲染后端 message
+    const ok = mode.value === 'login'
+      ? await authStore.login({ ...form })
+      : await authStore.register({ ...form });
+    // store 内已等过 /user/info，角色就位后才能算出该跳哪个端
+    if (ok) {
+      ElMessage.success(mode.value === 'login' ? '登录成功' : '注册成功');
+      await router.replace(resolveTarget());
     }
+    // 失败时错误提示由响应拦截器统一渲染后端 message
   } finally {
     loading.value = false;
   }
@@ -85,7 +99,7 @@ async function handleSubmit() {
         <div class="brand-icon">
           <GraduationCap :size="22" />
         </div>
-        <h1 class="brand-title">作业批阅系统</h1>
+        <h1 class="brand-title">智能教学系统</h1>
         <p class="brand-subtitle">
           {{ mode === 'login' ? '登录以继续使用' : '创建新账户' }}
         </p>
