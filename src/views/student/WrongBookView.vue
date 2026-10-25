@@ -2,8 +2,8 @@
 /**
  * 错题智能管理（数据流已接入）
  *
- * 已接桩：待实现 @/api/exam.fetchWrongQuestions          GET /api/exam/wrong-question/list（返回数组，不分页）
- * 已接桩：待实现 @/api/exam.markWrongQuestionMastered    PUT /api/exam/wrong-question/mastered/{questionId}
+ * 已对接：@/api/exam.fetchWrongQuestions          GET /api/exam/wrong-question/list（返回数组，不分页）
+ * 已对接：@/api/exam.markWrongQuestionMastered    PUT /api/exam/wrong-question/mastered/{questionId}
  *
  * 说明：
  * 1. 后端该接口直接返回数组，无分页与总数，因此统计（总数 / 未掌握）在本页对数组做聚合。
@@ -28,24 +28,21 @@ import { ElMessage } from 'element-plus';
 import { fetchWrongQuestions, markWrongQuestionMastered } from '@/api/exam';
 import type { WrongQuestionItem } from '@/types/exam';
 
-/** 题型码值 → 中文标签（码值语义待与后端确认） */
+/** 题型码值 → 中文标签（与后端 QuestionTypeEnum 一致） */
 const TYPE_LABELS: Record<number, string> = {
-  1: '单选题',
-  2: '多选题',
+  1: '选择题',
+  2: '填空题',
   3: '判断题',
-  4: '填空题',
-  5: '简答题',
-  6: '编程题',
-  7: '阅读程序题',
+  4: '程序阅读题',
+  5: '编程题',
+  6: '简答题',
 };
 
-/** 难度码值 → 中文标签（码值语义待与后端确认） */
+/** 难度码值 → 中文标签（与后端 QuestionDifficultyEnum 一致） */
 const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '入门',
-  2: '简单',
-  3: '中等',
-  4: '较难',
-  5: '困难',
+  1: '基础',
+  2: '进阶',
+  3: '拔高',
 };
 
 const router = useRouter();
@@ -148,7 +145,7 @@ onMounted(load);
         <div>
           <h2 class="st-card__title">错题概览</h2>
           <p class="st-card__hint">
-            已接桩：待实现 @/api/exam.fetchWrongQuestions · 后端返回数组（无分页、无总数字段），统计由本页聚合
+            已对接 @/api/exam.fetchWrongQuestions · 后端返回数组（无分页、无总数字段），统计由本页聚合
           </p>
         </div>
       </div>
