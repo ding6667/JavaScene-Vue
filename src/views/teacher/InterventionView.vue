@@ -3,7 +3,9 @@
  * 个性化教学干预 —— 数据来自 exam 错题本 + study 章节进度
  *
  * 后端未提供 /api/teach/intervention/*，本页按现有接口能覆盖的范围实现：
- * - GET /api/class/list                班级下拉（fetchClasses）
+ * - 已对接：@/api/exam.fetchWrongQuestions      GET  /api/exam/wrong-question/list
+ * - 已接桩：@/api/study.fetchProgress           GET  /api/study/progress/get?courseId=
+ * - 已对接：@/api/teacher.fetchTeacherClasses    GET  /api/class/records
  *
  * 明确的后端缺口（不用假数据填）：
  * 1) 错题与进度接口都只返回「当前登录用户」的数据，教师取不到全班学生个体记录，
@@ -53,9 +55,18 @@ const classes = ref<ClassResponse[]>([]);
 const wrongError = ref('');
 const progressError = ref('');
 
-/** 题型码值 → 标签（后端未给出 1~7 的语义，先按码值显示，联调后再补名称） */
+/** 题型码值 → 标签（与后端 QuestionTypeEnum 一致） */
+const TYPE_LABELS: Record<number, string> = {
+  1: '选择题',
+  2: '填空题',
+  3: '判断题',
+  4: '程序阅读题',
+  5: '编程题',
+  6: '简答题',
+};
+
 function typeLabel(type: number): string {
-  return type == null ? '—' : `题型 ${type}`;
+  return type == null ? '—' : TYPE_LABELS[Number(type)] ?? `题型 ${type}`;
 }
 
 function fmtTime(iso: string): string {
@@ -152,7 +163,9 @@ onMounted(async () => {
         <div>
           <h2 class="st-card__title">筛选条件</h2>
           <p class="st-card__hint">
-            这里先按错题热度定位需要干预的知识点，全班薄弱学生名单待上线
+            已对接 @/api/exam.fetchWrongQuestions（GET /api/exam/wrong-question/list）+
+            @/api/study.fetchProgress（GET /api/study/progress/get）；两接口只返回当前登录用户数据，
+            故本页为错题热点排行而非全班名单
           </p>
         </div>
         <span class="st-badge st-badge--neutral shell-badge">仅单个学生数据</span>

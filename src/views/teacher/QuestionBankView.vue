@@ -1,24 +1,20 @@
 <script setup lang="ts">
 /**
- * 题库管理 —— 视图侧取数逻辑已写完，@/api/exam 的实现方把桩函数里那一个 throw 替换掉即可联调
+ * 题库管理
  *
- * 已接桩：待实现 @/api/exam.fetchQuestionAdminList   GET    /api/exam/question/admin/list?chapterId&type&page&size
- * 已接桩：待实现 @/api/exam.fetchQuestionAdminDetail GET    /api/exam/question/admin/{id}（编辑抽屉回显）
- * 已接桩：待实现 @/api/exam.createQuestion          POST   /api/exam/question/admin/save
- * 已接桩：待实现 @/api/exam.updateQuestion          PUT    /api/exam/question/admin/update（请求体必须带 id）
- * 已接桩：待实现 @/api/exam.deleteQuestion          DELETE /api/exam/question/admin/delete/{id}
- * 已接桩：待实现 @/api/exam.randomQuestions         POST   /api/exam/question/admin/random
- * 已对接：@/api/exam.generateQuestions              POST   /api/exam/question/generate（只回批次号，异步落库，成功后自动重查列表）
- * 已对接：@/api/knowledge.fetchChapters             GET    /api/knowledge/chapter/list?courseId（章节下拉数据源）
+ * 已对接：
+ * - @/api/exam.fetchQuestionAdminList   GET    /api/exam/question/admin/list?chapterId&type&difficulty&keyword&pageNum&pageSize
+ * - @/api/exam.fetchQuestionAdminDetail GET    /api/exam/question/admin/{id}（编辑抽屉回显）
+ * - @/api/exam.createQuestion           POST   /api/exam/question/admin/save
+ * - @/api/exam.updateQuestion           PUT    /api/exam/question/admin/update（请求体必须带 id）
+ * - @/api/exam.deleteQuestion           DELETE /api/exam/question/admin/delete/{id}
+ * - @/api/exam.randomQuestions          POST   /api/exam/question/admin/random
+ * - @/api/exam.generateQuestions        POST   /api/exam/question/generate（只回批次号，异步落库，成功后自动重查列表）
+ * - @/api/knowledge.fetchChapters       GET    /api/knowledge/chapter/list?courseId（章节下拉数据源）
  *
- * 码值口径：type / difficulty / cognitiveLevel / judgeMode 入参一律用数字码值，中文标签在本页映射表维护，
- * **码值语义待与后端确认**。QuestionAdminItem 的 type、difficulty 类型是 string | number（列表接口可能直接回中文，
- * 随机抽题回码值），故 labelOf() 两种口径都兼容：能对上码值就取中文，否则原样展示后端文本。
- *
- * 两处与 @/types/exam 定义相关、只能在前端绕过的点（已在 api/types 层待修）：
- * 1) QuestionAdminQuery 只有 chapterId / type / page / size，没有 difficulty 与 keyword，
- *    因此「难度」「题干关键词」只对本页返回的 records 做本地过滤，不入库参；
- * 2) QuestionSaveRequest.cognitiveLevel 是 string，本页按码值字符串（'1'~'5'）提交。
+ * 码值口径与后端枚举一致：题型 1=选择 2=填空 3=判断 4=程序阅读 5=编程 6=简答；
+ * 难度 1=基础 2=进阶 3=拔高；判题方式 1=AI批改 2=测试用例判题 3=混合。
+ * 列表接口的 type/difficulty 返回码值，详情/随机抽题返回中文描述，labelOf() 两种口径都兼容。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import {
@@ -49,47 +45,37 @@ import { fetchChapters } from '@/api/knowledge';
 import type { Chapter } from '@/types/knowledge';
 import type { JudgeTestCase, QuestionAdminItem, QuestionSaveRequest } from '@/types/exam';
 
-// ==================== 码值映射表（码值语义待与后端确认） ====================
+// ==================== 码值映射表（与后端枚举一致） ====================
 
-/** 题型：后端 type 为整数编码 1~7 */
+/** 题型：后端 type 为整数编码 1~6 */
 const TYPE_LABELS: Record<number, string> = {
-  1: '单选题',
-  2: '多选题',
+  1: '选择题',
+  2: '填空题',
   3: '判断题',
-  4: '填空题',
-  5: '简答题',
-  6: '编程题',
-  7: '阅读程序题',
+  4: '程序阅读题',
+  5: '编程题',
+  6: '简答题',
 };
 
-/** 难度：对应 difficulty 编码 */
+/** 难度：1=基础 2=进阶 3=拔高 */
 const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '入门',
-  2: '简单',
-  3: '中等',
-  4: '较难',
-  5: '困难',
+  1: '基础',
+  2: '进阶',
+  3: '拔高',
 };
 
-/** 认知层级：cognitiveLevel 在类型里是 string，本页以码值字符串提交 */
-const COGNITIVE_LABELS: Record<number, string> = {
-  1: '记忆',
-  2: '理解',
-  3: '应用',
-  4: '分析',
-  5: '综合',
-};
+/** 认知层级：后端为中文描述（如“理解”） */
+const COGNITIVE_OPTIONS = ['记忆', '理解', '应用', '分析', '评价', '创造'];
 
-/** 判题方式：对应 judgeMode 编码 */
+/** 判题方式：1=AI批改 2=测试用例判题 3=混合 */
 const JUDGE_MODE_LABELS: Record<number, string> = {
-  1: '客观题比对',
-  2: '用例判题',
-  3: 'AI 评分',
+  1: 'AI 批改',
+  2: '测试用例判题',
+  3: '混合',
 };
 
 const QUESTION_TYPE_OPTIONS = toEntries(TYPE_LABELS);
 const DIFFICULTY_OPTIONS = toEntries(DIFFICULTY_LABELS);
-const COGNITIVE_OPTIONS = toEntries(COGNITIVE_LABELS);
 const JUDGE_MODE_OPTIONS = toEntries(JUDGE_MODE_LABELS);
 
 function toEntries(map: Record<number, string>) {
@@ -121,18 +107,28 @@ function codeFrom(map: Record<number, string>, raw: string | number | null | und
   return hit ? Number(hit[0]) : fallback;
 }
 
-/** 通过率：后端可能是 0~1 的小数，也可能是 0~100 的百分数，统一归一到百分比 */
+/** 认知层级：后端是中文描述，兼容历史码值 */
+function cognitiveText(raw: string | number | null | undefined): string {
+  const text = String(raw ?? '').trim();
+  if (!text) return '理解';
+  const n = Number(text);
+  if (Number.isInteger(n) && n >= 1 && n <= COGNITIVE_OPTIONS.length) {
+    return COGNITIVE_OPTIONS[n - 1];
+  }
+  return text;
+}
+
+/** 通过率：后端为百分数（0~100） */
 function ratePercent(value: number | null | undefined): string {
   const n = Number(value);
   if (!Number.isFinite(n)) return '—';
-  const percent = n <= 1 ? n * 100 : n;
-  return `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  return `${Math.max(0, Math.min(100, Math.round(n)))}%`;
 }
 
-/** 桩函数同步 throw，统一渲染成「接口待实现：@/api/模块.函数」文案 */
-function stubText(_fn: string, e: unknown): string {
+/** 统一渲染接口错误文案 */
+function apiErrorText(fn: string, e: unknown): string {
   const msg = (e as Error)?.message ?? '';
-  return msg ? `该功能暂未开放：${msg}` : '该功能暂未开放';
+  return msg ? `接口调用失败：${fn}（${msg}）` : `接口调用失败：${fn}`;
 }
 
 // ==================== 章节下拉（真实接口） ====================
@@ -159,9 +155,8 @@ const filters = reactive({
   chapterId: null as number | null,
   /** 0 = 全部题型（作为查询参数时转 undefined） */
   type: 0,
-  /** 0 = 全部难度；QuestionAdminQuery 无该字段，只对本页结果本地过滤 */
+  /** 0 = 全部难度 */
   difficulty: 0,
-  /** 列表接口无关键词参数，只对本页结果本地过滤 */
   keyword: '',
 });
 
@@ -174,23 +169,7 @@ const listError = ref('');
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / size.value)));
 
-/** 本页可见行：接口分页结果 + 难度/关键词本地过滤 */
-const rows = computed(() =>
-  records.value.filter((r) => {
-    if (filters.difficulty && !matchDifficulty(r.difficulty, filters.difficulty)) return false;
-    const kw = filters.keyword.trim();
-    if (kw && !String(r.content ?? '').includes(kw)) return false;
-    return true;
-  }),
-);
-
-/** difficulty 可能是码值也可能是中文（string | number），两种口径都比对一次 */
-function matchDifficulty(raw: string | number | null | undefined, code: number): boolean {
-  const text = String(raw ?? '').trim();
-  if (!text) return false;
-  if (Number(text) === code) return true;
-  return text === DIFFICULTY_LABELS[code];
-}
+const rows = computed(() => records.value);
 
 async function loadList() {
   listLoading.value = true;
@@ -199,8 +178,10 @@ async function loadList() {
     const res = await fetchQuestionAdminList({
       chapterId: filters.chapterId ?? undefined,
       type: filters.type || undefined,
-      page: page.value,
-      size: size.value,
+      difficulty: filters.difficulty || undefined,
+      keyword: filters.keyword.trim() || undefined,
+      pageNum: page.value,
+      pageSize: size.value,
     });
     records.value = res?.records ?? [];
     total.value = res?.total ?? 0;
@@ -209,7 +190,7 @@ async function loadList() {
   } catch (e) {
     records.value = [];
     total.value = 0;
-    listError.value = stubText('@/api/exam.fetchQuestionAdminList', e);
+    listError.value = apiErrorText('@/api/exam.fetchQuestionAdminList', e);
   } finally {
     listLoading.value = false;
   }
@@ -256,7 +237,7 @@ interface DrawerForm {
   chapterId: number | null;
   difficulty: number;
   score: number;
-  cognitiveLevel: number;
+  cognitiveLevel: string;
 }
 
 const drawerVisible = ref(false);
@@ -283,7 +264,7 @@ const form = reactive<DrawerForm>({
   chapterId: null,
   difficulty: 2,
   score: 5,
-  cognitiveLevel: 2,
+  cognitiveLevel: '理解',
 });
 
 function resetForm() {
@@ -304,11 +285,12 @@ function resetForm() {
   form.chapterId = filters.chapterId;
   form.difficulty = 2;
   form.score = 5;
-  form.cognitiveLevel = 2;
+  form.cognitiveLevel = '理解';
 }
 
-/** 后端下发的 JSON 字符串 → 表单可编辑文本；解析失败保留原文，提交时再兜一次 */
-function jsonToText(raw: string | null | undefined): string {
+/** 后端下发的 JSON 字符串 / 数组 → 表单可编辑文本；解析失败保留原文，提交时再兜一次 */
+function jsonToText(raw: string | string[] | null | undefined): string {
+  if (Array.isArray(raw)) return raw.join('\n');
   const text = String(raw ?? '').trim();
   if (!text) return '';
   try {
@@ -323,42 +305,25 @@ function jsonToText(raw: string | null | undefined): string {
   }
 }
 
-/** 一行一个选项 → JSON 数组字符串；已是 JSON 数组则规范化 */
-function buildOptionsJson(text: string): string | undefined {
+/** 一行一个选项 → 字符串数组；已是 JSON 数组则规范化 */
+function buildOptionsArray(text: string): string[] | undefined {
   const trimmed = text.trim();
   if (!trimmed) return undefined;
   try {
     const parsed = JSON.parse(trimmed) as unknown;
-    return JSON.stringify(Array.isArray(parsed) ? parsed : [parsed]);
+    return (Array.isArray(parsed) ? parsed : [parsed]).map((item) => String(item));
   } catch {
     // 非 JSON：按行切分成数组
   }
-  return JSON.stringify(
-    trimmed
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+  return trimmed
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-/** 答案 → JSON 字符串：合法 JSON 规范化；多选题按逗号切数组；其余包成 JSON 字符串 */
-function buildAnswerJson(text: string): string | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  try {
-    return JSON.stringify(JSON.parse(trimmed));
-  } catch {
-    // 非 JSON：按下面的口径处理
-  }
-  if (form.type === 2) {
-    return JSON.stringify(
-      trimmed
-        .split(/[,，、\s]+/)
-        .map((s) => s.trim())
-        .filter(Boolean),
-    );
-  }
-  return JSON.stringify(trimmed);
+/** 后端 answer 是 String，原样提交（选择题 A / A,B，编程题为参考实现） */
+function buildAnswer(text: string): string | undefined {
+  return text.trim() || undefined;
 }
 
 function buildStringList(text: string): string[] | undefined {
@@ -420,7 +385,7 @@ function fillForm(item: QuestionAdminItem) {
   form.chapterId = item.chapterId ?? null;
   form.difficulty = codeFrom(DIFFICULTY_LABELS, item.difficulty, 2);
   form.score = Number.isFinite(Number(item.score)) ? Number(item.score) : 5;
-  form.cognitiveLevel = codeFrom(COGNITIVE_LABELS, item.cognitiveLevel, 2);
+  form.cognitiveLevel = cognitiveText(item.cognitiveLevel);
 }
 
 function openDrawer(mode: 'create' | 'edit', row?: QuestionAdminItem) {
@@ -440,7 +405,7 @@ function openDrawer(mode: 'create' | 'edit', row?: QuestionAdminItem) {
       drawerError.value = '';
     })
     .catch((e: unknown) => {
-      drawerError.value = `${stubText('@/api/exam.fetchQuestionAdminDetail', e)}；已改用列表里的信息填写，答案与解析可能不完整，请核对后再保存`;
+      drawerError.value = `${apiErrorText('@/api/exam.fetchQuestionAdminDetail', e)}；已退回列表行数据回显，答案/解析等字段可能不完整`;
     })
     .finally(() => {
       drawerLoading.value = false;
@@ -451,14 +416,14 @@ function closeDrawer() {
   drawerVisible.value = false;
 }
 
-const isProgramming = computed(() => form.type === 6 || form.type === 7);
+const isProgramming = computed(() => form.type === 5);
 
 function buildPayload(): QuestionSaveRequest {
   const payload: QuestionSaveRequest = {
     content: form.content.trim(),
     type: form.type,
-    options: buildOptionsJson(form.options),
-    answer: buildAnswerJson(form.answer),
+    options: buildOptionsArray(form.options),
+    answer: buildAnswer(form.answer),
     analysis: form.analysis.trim() || undefined,
     requirements: buildStringList(form.requirements),
     codeFramework: form.codeFramework || undefined,
@@ -470,7 +435,7 @@ function buildPayload(): QuestionSaveRequest {
     chapterId: form.chapterId ?? undefined,
     difficulty: form.difficulty,
     score: form.score,
-    cognitiveLevel: String(form.cognitiveLevel),
+    cognitiveLevel: form.cognitiveLevel,
   };
   if (drawerMode.value === 'edit' && form.id != null) payload.id = form.id;
   return payload;
@@ -480,6 +445,14 @@ async function handleSave() {
   if (saving.value) return;
   if (!form.content.trim()) {
     ElMessage.warning('题干不能为空');
+    return;
+  }
+  if (!form.answer.trim()) {
+    ElMessage.warning('标准答案（answer）不能为空');
+    return;
+  }
+  if (form.chapterId == null) {
+    ElMessage.warning('章节（chapterId）不能为空');
     return;
   }
   if (drawerMode.value === 'edit' && form.id == null) {
@@ -511,7 +484,7 @@ async function handleSave() {
     await loadList();
   } catch (e) {
     ElMessage.error(
-      stubText(drawerMode.value === 'create' ? '@/api/exam.createQuestion' : '@/api/exam.updateQuestion', e),
+      apiErrorText(drawerMode.value === 'create' ? '@/api/exam.createQuestion' : '@/api/exam.updateQuestion', e),
     );
   } finally {
     saving.value = false;
@@ -539,7 +512,7 @@ async function handleDelete(row: QuestionAdminItem) {
     ElMessage.success(msg || '题目已删除');
     await loadList();
   } catch (e) {
-    ElMessage.error(stubText('@/api/exam.deleteQuestion', e));
+    ElMessage.error(apiErrorText('@/api/exam.deleteQuestion', e));
   } finally {
     deletingId.value = null;
   }
@@ -582,7 +555,7 @@ async function runRandom() {
     if (!randomResult.value.length) ElMessage.info('该条件下没有可抽取的题目');
   } catch (e) {
     randomResult.value = [];
-    randomError.value = stubText('@/api/exam.randomQuestions', e);
+    randomError.value = apiErrorText('@/api/exam.randomQuestions', e);
   } finally {
     randomLoading.value = false;
   }
@@ -595,7 +568,7 @@ const aiError = ref('');
 const aiBatch = ref<number | null>(null);
 const aiForm = reactive({
   chapterId: null as number | null,
-  /** QuestionGenerateRequest.questionType 是 string：'all' 或 '1'~'7' */
+  /** QuestionGenerateRequest.questionType 是 string：'all' 或 '1'~'6' */
   questionType: 'all',
   count: 5,
   userInstruction: '',
@@ -654,9 +627,11 @@ onMounted(() => {
         <Search :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">题目筛选</h2>
-          <p class="st-card__hint">按章节和题型筛选题库里已有的题目</p>
+          <p class="st-card__hint">
+            已对接 @/api/exam.fetchQuestionAdminList · GET /api/exam/question/admin/list?chapterId&amp;type&amp;difficulty&amp;keyword&amp;pageNum&amp;pageSize
+          </p>
         </div>
-        <span class="st-badge st-badge--neutral shell-badge"><Database :size="11" /> 暂未开放</span>
+        <span class="st-badge st-badge--success shell-badge"><Database :size="11" /> 已对接</span>
       </div>
       <div class="st-card__body filter-row">
         <div class="filter-item">
@@ -673,15 +648,15 @@ onMounted(() => {
           </el-select>
         </div>
         <div class="filter-item">
-          <label class="filter-label">难度（只筛本页）</label>
+          <label class="filter-label">难度</label>
           <el-select v-model="filters.difficulty" style="width: 130px;">
             <el-option label="全部难度" :value="0" />
             <el-option v-for="d in DIFFICULTY_OPTIONS" :key="d.value" :label="d.label" :value="d.value" />
           </el-select>
         </div>
         <div class="filter-item">
-          <label class="filter-label">题干关键词（只筛本页）</label>
-          <input v-model="filters.keyword" class="form-input" placeholder="输入关键词，只筛选本页结果" />
+          <label class="filter-label">题干关键词</label>
+          <input v-model="filters.keyword" class="form-input" placeholder="模糊匹配题干" />
         </div>
         <button class="st-btn st-btn--primary" :disabled="listLoading" @click="search">
           <Loader2 v-if="listLoading" :size="14" class="spin" />
@@ -697,8 +672,8 @@ onMounted(() => {
           <AlertTriangle :size="12" /> {{ chaptersError }}
         </p>
         <p class="code-note">
-          表格里的题型、难度都显示为中文；难度和关键词不参与整库搜索，
-          只对本页 {{ size }} 条结果生效，想查全库请缩小章节范围后翻页查看。
+          题型 / 难度下拉提交数字码值（题型 1~6、难度 1~3），与后端枚举一致；
+          难度与题干关键词由列表接口过滤，分页参数为 <code>pageNum/pageSize</code>。
         </p>
       </div>
     </div>
@@ -714,6 +689,7 @@ onMounted(() => {
           <button
             class="st-btn st-btn--secondary"
             :disabled="randomLoading"
+            title="按章节随机抽题"
             @click="openRandom"
           >
             <Layers :size="13" /> 随机抽题组卷
@@ -758,7 +734,7 @@ onMounted(() => {
         <div v-else-if="rows.length === 0" class="st-empty">
           <ClipboardList :size="22" :stroke-width="1.2" class="st-empty__icon" />
           <p class="st-empty__text">
-            {{ total ? '本页的题目被难度或关键词筛掉了，调整筛选条件后再看' : '当前筛选条件下暂无题目' }}
+            当前筛选条件下暂无题目
           </p>
           <button class="st-btn st-btn--secondary" style="margin-top: 12px;" @click="loadList">
             <RefreshCw :size="13" /> 重新加载
@@ -795,6 +771,7 @@ onMounted(() => {
                     <div class="row-actions">
                       <button
                         class="st-text-btn"
+                        title="编辑题目"
                         @click="openDrawer('edit', row)"
                       >
                         <Pencil :size="12" /> 编辑
@@ -802,6 +779,7 @@ onMounted(() => {
                       <button
                         class="st-text-btn st-text-btn--danger"
                         :disabled="deletingId === row.id"
+                        title="删除题目"
                         @click="handleDelete(row)"
                       >
                         <Loader2 v-if="deletingId === row.id" :size="12" class="spin" />
@@ -849,8 +827,9 @@ onMounted(() => {
             </div>
             <div class="drawer-body">
               <p class="drawer-hint">
-                带「必填」的项填好即可保存；选项一行一个，参考答案按题型填写，
-                编程题的测试用例按示例格式填写，系统会自动整理成需要的结构。
+                {{ drawerMode === 'create' ? 'POST /api/exam/question/admin/save' : 'PUT /api/exam/question/admin/update（带 id）' }}
+                —— 已对接 @/api/exam.{{ drawerMode === 'create' ? 'createQuestion' : 'updateQuestion' }}。
+                options 以字符串数组提交；answer 按题型填原始答案文本；testCases 填 JudgeTestCase[] 的 JSON 数组。
               </p>
 
               <p v-if="drawerLoading" class="drawer-loading">
@@ -901,7 +880,7 @@ onMounted(() => {
                 <div class="form-item" style="flex: 1;">
                   <label class="form-label">认知层级</label>
                   <el-select v-model="form.cognitiveLevel" style="width: 100%;">
-                    <el-option v-for="c in COGNITIVE_OPTIONS" :key="c.value" :label="c.label" :value="c.value" />
+                    <el-option v-for="c in COGNITIVE_OPTIONS" :key="c" :label="c" :value="c" />
                   </el-select>
                 </div>
                 <div class="form-item" style="flex: 1;">
@@ -913,17 +892,17 @@ onMounted(() => {
               </div>
 
               <div v-if="!isProgramming" class="form-item">
-                <label class="form-label">选项（一行一个）</label>
+                <label class="form-label">选项（options，一行一个，以字符串数组提交）</label>
                 <textarea v-model="form.options" class="form-textarea" rows="4" placeholder="A. 选项一&#10;B. 选项二"></textarea>
               </div>
 
               <div class="form-item">
-                <label class="form-label">参考答案</label>
+                <label class="form-label">参考答案（answer，原始文本）</label>
                 <textarea
                   v-model="form.answer"
                   class="form-textarea"
                   rows="2"
-                  placeholder="单选填 A；多选填 A,B（会自动整理成选项列表）；编程题可填参考实现"
+                  placeholder="单选填 A；多选填 A,B；编程题可填参考实现"
                 ></textarea>
               </div>
 
@@ -979,6 +958,11 @@ onMounted(() => {
               <button
                 class="st-btn st-btn--primary"
                 :disabled="saving"
+                :title="
+                  drawerMode === 'create'
+                    ? '已对接 @/api/exam.createQuestion'
+                    : '已对接 @/api/exam.updateQuestion'
+                "
                 @click="handleSave"
               >
                 <Loader2 v-if="saving" :size="14" class="spin" />
@@ -996,7 +980,7 @@ onMounted(() => {
         <header class="dialog__head">
           <div>
             <h3 class="dialog__title">随机抽题组卷</h3>
-            <p class="dialog__sub">从指定章节随机抽取已有题目，组成一套练习</p>
+            <p class="dialog__sub">已对接 @/api/exam.randomQuestions · POST /api/exam/question/admin/random</p>
           </div>
           <button class="st-btn st-btn--ghost" @click="randomVisible = false">关闭</button>
         </header>
