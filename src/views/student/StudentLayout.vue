@@ -6,6 +6,7 @@ import {
   BarChart3,
   BookOpen,
   CircleAlert,
+  CircleUser,
   ClipboardList,
   Code2,
   GraduationCap,
@@ -34,6 +35,7 @@ const navItems = [
   { path: '/student/homework', icon: ClipboardList, label: '我的作业' },
   { path: '/student/wrong', icon: CircleAlert, label: '错题本' },
   { path: '/student/report', icon: BarChart3, label: '学习报告' },
+  { path: '/student/account', icon: CircleUser, label: '账号中心' },
 ];
 
 function isActive(item: typeof navItems[0]): boolean {

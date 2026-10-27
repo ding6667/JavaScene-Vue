@@ -42,9 +42,18 @@ export function renderMarkdownStreaming(src: string): string {
   return renderMarkdown(closeUnclosedFence(src));
 }
 
+export interface MarkdownRenderOptions {
+  /**
+   * 标题层级偏移：默认 +3（Markdown 的 h1 渲染成 h4，避免和页面标题抢层级）。
+   * PPT 主题 CSS 按 h1/h2/h3 编写，渲染幻灯片时传 0。
+   */
+  headingOffset?: number;
+}
+
 /** 支持：标题 / 有序无序列表 / 引用 / 代码块 / 分隔线 / 段落 / 行内强调 */
-export function renderMarkdown(src: string): string {
+export function renderMarkdown(src: string, options: MarkdownRenderOptions = {}): string {
   if (!src) return '';
+  const headingOffset = options.headingOffset ?? 3;
   const out: string[] = [];
   let inCode = false;
   let listTag: 'ul' | 'ol' | null = null;
@@ -86,7 +95,7 @@ export function renderMarkdown(src: string): string {
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
       closeList();
-      const level = Math.min(heading[1].length + 3, 6);
+      const level = Math.min(heading[1].length + headingOffset, 6);
       out.push(`<h${level} class="md-h">${renderInline(heading[2])}</h${level}>`);
       continue;
     }
@@ -119,4 +128,42 @@ export function renderMarkdown(src: string): string {
   if (inCode) out.push('</code></pre>');
   closeList();
   return out.join('');
+}
+
+/**
+ * PPT Markdown → 一页一页的幻灯片。
+ * 备课智能体产出的 PPT 正文用空行 + `---` 分页；`Title\n---` 这种 Setext 下划线不算分页，
+ * 所以要求分隔线上一行是空行，否则会把标题拆坏。
+ * 代码围栏（``` / ~~~）内部的 `---` 同样不分页。
+ */
+export function splitMarkdownSlides(src: string): string[] {
+  if (!src) return [];
+  const lines = src.split('\n');
+  const slides: string[] = [];
+  let buf: string[] = [];
+  let inFence = false;
+  let fenceChar = '';
+  const flush = () => {
+    if (buf.some((l) => l.trim())) slides.push(buf.join('\n').trim());
+    buf = [];
+  };
+  lines.forEach((line, i) => {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceChar = fence[1][0];
+      } else if (fence[1][0] === fenceChar) {
+        inFence = false;
+      }
+      buf.push(line);
+      return;
+    }
+    const isBreak =
+      !inFence && /^ {0,3}-{3,}\s*$/.test(line) && (i === 0 || lines[i - 1].trim() === '');
+    if (isBreak) flush();
+    else buf.push(line);
+  });
+  flush();
+  return slides;
 }

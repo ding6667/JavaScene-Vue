@@ -15,6 +15,13 @@ const router = createRouter({
       meta: { public: true, title: '登录' },
     },
     {
+      // 管理员注册是公开页：独立于运维端布局，未登录访问时不会带出内部导航
+      path: '/admin/register',
+      name: 'AdminRegister',
+      component: () => import('@/views/admin/AdminRegisterView.vue'),
+      meta: { public: true, title: '管理员注册' },
+    },
+    {
       // 一个账号挂了多个角色时，登录后先在这里选进哪个端
       path: '/choose-portal',
       name: 'ChoosePortal',
@@ -76,6 +83,17 @@ const router = createRouter({
           path: 'teach/questions',
           name: 'TeachQuestions',
           component: () => import('@/views/teacher/QuestionBankView.vue'),
+        },
+        {
+          // 名册接口是 TEACHER/ADMIN 权限，与运维端复用同一个视图
+          path: 'teach/students',
+          name: 'TeachStudents',
+          component: () => import('@/views/common/StudentRosterView.vue'),
+        },
+        {
+          path: 'account',
+          name: 'Account',
+          component: () => import('@/views/AccountView.vue'),
         },
         {
           path: 'settings',
@@ -151,6 +169,11 @@ const router = createRouter({
           name: 'StudentReport',
           component: () => import('@/views/student/ReportView.vue'),
         },
+        {
+          path: 'account',
+          name: 'StudentAccount',
+          component: () => import('@/views/AccountView.vue'),
+        },
       ],
     },
     // ==================== 运维端 ====================
@@ -174,6 +197,16 @@ const router = createRouter({
           component: () => import('@/views/admin/UserManageView.vue'),
         },
         {
+          path: 'classes',
+          name: 'AdminClasses',
+          component: () => import('@/views/admin/ClassManageView.vue'),
+        },
+        {
+          path: 'students',
+          name: 'AdminStudents',
+          component: () => import('@/views/common/StudentRosterView.vue'),
+        },
+        {
           path: 'knowledge',
           name: 'AdminKnowledge',
           component: () => import('@/views/admin/KnowledgeManageView.vue'),
@@ -187,14 +220,6 @@ const router = createRouter({
           path: 'dataset',
           name: 'AdminDatasetUpload',
           component: () => import('@/views/admin/DatasetUploadView.vue'),
-        },
-        {
-          // 系统初始化时还没有任何管理员，注册页必须对未登录者开放；
-          // roles: [] 覆盖父级的 ADMIN 限制，避免 bootstrap 阶段被守卫拦死
-          path: 'register',
-          name: 'AdminRegister',
-          component: () => import('@/views/admin/AdminRegisterView.vue'),
-          meta: { public: true, roles: [] },
         },
         {
           path: 'logs',

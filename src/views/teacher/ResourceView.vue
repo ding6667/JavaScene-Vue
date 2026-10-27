@@ -42,7 +42,7 @@ const SHELL_ROWS = [1, 2, 3].map((i) => ({
   chapter: '—',
   size: '—',
   uploadTime: '—',
-  description: '待接口返回资源说明',
+  description: '资源说明暂未开放',
 }));
 
 const resources = ref<typeof SHELL_ROWS>([]);
@@ -69,8 +69,7 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
           </div>
           <div class="dropzone__text">点击或拖拽文件到此区域上传</div>
           <div class="dropzone__hint">
-            接口预留：POST /api/knowledge/dataset/upload/file?chapterId=、GET /api/knowledge/dataset/upload/list、
-            PUT /api/knowledge/content/delete?id=（upload 模块已下线）
+            资源上传功能暂未开放，开放后可以直接把文件拖到这里
           </div>
         </div>
       </div>
@@ -91,9 +90,9 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
           clearable
         />
         <el-select v-model="filters.chapterId" placeholder="绑定章节" clearable style="width: 180px;">
-          <el-option label="后端未提供资源列表接口" value="_unavailable" disabled />
+          <el-option label="暂未开放" value="_unavailable" disabled />
         </el-select>
-        <span class="toolbar-count">共 {{ displayRows.length }} 个资源（骨架占位）</span>
+        <span class="toolbar-count">资源清单暂未开放，下方只是占位示例</span>
         <button class="st-btn st-btn--primary" style="margin-left: auto;" @click="dialogVisible = true">
           <Plus :size="14" /> 上传资源
         </button>
@@ -106,9 +105,9 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
         <FolderOpen :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">资源列表</h2>
-          <p class="st-card__hint">GET /api/knowledge/dataset/upload/list 接入后填充本表</p>
+          <p class="st-card__hint">开放后会在这里列出你上传的课件、代码案例和拓展资料</p>
         </div>
-        <span class="st-badge st-badge--neutral shell-badge">UI 骨架</span>
+        <span class="st-badge st-badge--neutral shell-badge">暂未开放</span>
       </div>
       <div class="st-card__body">
         <div class="table-wrapper">
@@ -138,7 +137,7 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
                 <td class="cell-secondary">{{ r.uploadTime }}</td>
                 <td class="cell-desc">{{ r.description }}</td>
                 <td>
-                  <button class="st-text-btn st-text-btn--danger" disabled title="接口预留：教材原文可走 PUT /api/knowledge/content/delete，知识库文档删除暂无接口">
+                  <button class="st-text-btn st-text-btn--danger" disabled>
                     <Trash2 :size="13" /> 删除
                   </button>
                 </td>
@@ -155,12 +154,12 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
         <div class="st-card upload-panel">
           <div class="st-card__header">
             <h2 class="st-card__title">上传教学资源</h2>
-            <span class="st-badge st-badge--neutral shell-badge">UI 骨架</span>
+            <span class="st-badge st-badge--neutral shell-badge">暂未开放</span>
           </div>
           <div class="st-card__body">
             <div class="form-item">
               <label class="form-label">资源名称</label>
-              <input v-model="form.name" class="form-input" placeholder="如：第 8 章 接口 课件.pptx" />
+              <input v-model="form.name" class="form-input" placeholder="如：第 8 章 面向对象 课件.pptx" />
             </div>
             <div class="form-row">
               <div class="form-item" style="flex: 1;">
@@ -171,8 +170,8 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
               </div>
               <div class="form-item" style="flex: 1;">
                 <label class="form-label">绑定章节</label>
-                <el-select v-model="form.chapterId" clearable placeholder="可选，对应 chapterId" style="width: 100%;">
-                  <el-option label="章节列表来自 GET /api/knowledge/chapter/list" value="" disabled />
+                <el-select v-model="form.chapterId" clearable placeholder="请选择章节（可选）" style="width: 100%;">
+                  <el-option label="暂未开放" value="" disabled />
                 </el-select>
               </div>
             </div>
@@ -189,12 +188,12 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
               <label class="form-label">文件</label>
               <div class="file-pick">
                 <Upload :size="14" />
-                <span>选择文件（尚未接入 POST /api/knowledge/dataset/upload/file）</span>
+                <span>选择文件（上传功能暂未开放）</span>
               </div>
             </div>
             <div class="upload-actions">
               <button class="st-btn st-btn--ghost" @click="dialogVisible = false">取消</button>
-              <button class="st-btn st-btn--primary" disabled title="接口预留：后端无 teach/resource 模块">
+              <button class="st-btn st-btn--primary" disabled>
                 <Upload :size="13" /> 确认上传
               </button>
             </div>

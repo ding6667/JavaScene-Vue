@@ -4,16 +4,17 @@ import type { AuthRequest, AuthResponse, LogoutRequest, LogoutResponse } from '@
 // 注意：响应拦截器已返回 response.data（即 { code, message, data }），此处无需再 .data
 
 // ==================== 登录 ====================
-// 后端接口：POST /api/user/auth/login（三端共用同一个登录入口，角色由 token 携带）
+// 后端接口：POST /api/user/auth/login（三端共用同一个登录入口）
 // 请求体：{ username, password }
-// 响应：{ code, message, data } 其中 data 为 token 字符串
+// 响应 data：{ token, userId, username, roles[], defaultRoute }
 export async function login(data: AuthRequest): Promise<AuthResponse> {
   return (await axiosInstance.post<AuthResponse>('/api/user/auth/login', data)) as unknown as AuthResponse;
 }
 
 // ==================== 注册 ====================
-// 后端接口：POST /api/user/auth/register（学生端注册，成功即返回 token，无需再登录）
+// 后端接口：POST /api/user/auth/register（注册成功即返回会话，无需再登录）
 // 请求体：{ username, password }
+// 响应 data：同 login
 export async function register(data: AuthRequest): Promise<AuthResponse> {
   return (await axiosInstance.post<AuthResponse>('/api/user/auth/register', data)) as unknown as AuthResponse;
 }

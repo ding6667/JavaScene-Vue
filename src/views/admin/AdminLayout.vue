@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import { cn } from '@/lib/utils';
 import {
   Activity,
+  CircleUser,
   CloudUpload,
   DatabaseBackup,
   BookOpen,
@@ -15,6 +16,8 @@ import {
   ScrollText,
   ShieldCheck,
   SlidersHorizontal,
+  UserRound,
+  Users,
 } from 'lucide-vue-next';
 import ChatWidget from '@/components/chat/ChatWidget.vue';
 import { useAuthStore } from '@/stores/auth';
@@ -27,12 +30,15 @@ const isCollapsed = ref(true);
 const navItems = [
   { path: '/admin/dashboard', icon: LayoutDashboard, label: '运维仪表盘', exact: true },
   { path: '/admin/users', icon: KeyRound, label: '用户管理' },
+  { path: '/admin/classes', icon: Users, label: '班级管理' },
+  { path: '/admin/students', icon: UserRound, label: '学生名单' },
   { path: '/admin/knowledge', icon: BookOpen, label: '知识库维护' },
   { path: '/admin/weights', icon: SlidersHorizontal, label: '权重配置' },
   { path: '/admin/dataset', icon: CloudUpload, label: '知识库上传' },
   { path: '/admin/logs', icon: ScrollText, label: '日志审计' },
   { path: '/admin/backup', icon: DatabaseBackup, label: '数据备份' },
   { path: '/admin/settings', icon: ServerCog, label: '系统参数' },
+  { path: '/admin/account', icon: CircleUser, label: '账号中心' },
   { path: '/admin/register', icon: ShieldCheck, label: '管理员注册' },
 ];
 

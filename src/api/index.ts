@@ -1,7 +1,7 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios';
 import { ElMessage } from 'element-plus';
 import { logout as revokeToken } from '@/api/auth';
-import { clearSessionStorage } from '@/utils/session';
+import { clearSessionStorage, TOKEN_KEY } from '@/utils/session';
 
 // ==================== 配置 axios 实例 ====================
 // 开发环境通过 Vite 代理转发 /api 到后端（见 vite.config.js），无需跨域
@@ -70,6 +70,12 @@ function handleTokenExpired(message: string) {
 let revoking = false;
 
 function handleForbidden(message: string) {
+  // 这套后端对「没带 token」的请求也回 403（Spring Security 默认没配 401 入口），
+  // 本地根本没有 token 时按会话失效处理：不该报「越权」，更没有 jti 可拉黑
+  if (!localStorage.getItem(TOKEN_KEY)) {
+    handleTokenExpired(message || '登录已失效，请重新登录');
+    return;
+  }
   ElMessage.error(message || '没有权限访问该资源，已退出登录');
   // 一个页面常常并发多个请求同时返 403，拉黑一次就够
   if (!revoking) {
@@ -145,35 +151,37 @@ axiosInstance.interceptors.response.use(
     },
 
 
-    (error: AxiosError) => {
+    async (error: AxiosError) => {
       const config = error.config;
+      const response = error.response;
 
       // ========== 场景 1：下载接口（responseType: blob）发生 HTTP 错误 ==========
-      if (config?.responseType === 'blob' && error.response?.data instanceof Blob) {
-        // 异步读取 Blob 中的内容（可能是 JSON 错误信息，也可能是 HTML 错误页）
-        return error.response.data.text()
-            .then(text => {
-              let message = '';
-              try {
-                // 尝试解析为 JSON（后端可能返回 { code: 403, message: "权限不足" }）
-                const json = JSON.parse(text);
-                message = json?.message || `下载失败（HTTP ${error.response?.status}）`;
-              } catch {
-                // 解析失败（比如返回的是 HTML 错误页），直接用状态码提示
-                const status = error.response?.status;
-                if (status === 403) message = '没有权限下载该文件';
-                else if (status === 404) message = '文件不存在或已被删除';
-                else if (status === 500) message = '服务器内部错误，请稍后重试';
-                else message = `下载失败（HTTP ${status}）`;
+      if (config?.responseType === 'blob' && response?.data instanceof Blob) {
+        const status = response.status;
+        let text = '';
+        try {
+          text = await response.data.text();
+        } catch {
+          // 连错误体都读不了（极少发生）
+          ElMessage.error('下载失败，请稍后重试');
+          return Promise.reject(error);
         }
+
+        let message = '';
+        try {
+          // 后端可能返回 { code: 403, message: "权限不足" }
+          const json = JSON.parse(text);
+          message = json?.message || `下载失败（HTTP ${status}）`;
+        } catch {
+          // 解析失败（比如返回的是 HTML 错误页），直接用状态码提示
+          if (status === 403) message = '没有权限下载该文件';
+          else if (status === 404) message = '文件不存在或已被删除';
+          else if (status === 500) message = '服务器内部错误，请稍后重试';
+          else message = `下载失败（HTTP ${status}）`;
+        }
+        // 只提示一次：之前的 then/catch 结构会把这里的 reject 再当成“读文件失败”提示第二遍
         ElMessage.error(message);
         return Promise.reject(new Error(message));
-      })
-      .catch(() => {
-        // 极端情况：连 text() 都读不了（极少发生）
-        ElMessage.error('下载失败，请稍后重试');
-        return Promise.reject(error);
-      });
       }
 
       const responseData = error.response?.data as Record<string, unknown> | undefined;
@@ -194,6 +202,10 @@ axiosInstance.interceptors.response.use(
 
       // 越权（HTTP 403 或业务 code=403）→ 策略 A：强制下线
       if (error.response?.status === 403 || backendCode === 403) {
+        if (import.meta.env.DEV) {
+          // 开发期留一条可定位的日志：是哪个接口触发了强制下线
+          console.warn('[403]', config?.method?.toUpperCase(), config?.url, backendMessage);
+        }
         handleForbidden(backendMessage || '没有权限访问该资源，已退出登录');
         return Promise.reject(error);
       }

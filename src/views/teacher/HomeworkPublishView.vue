@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 作业发布（接真实接口）
+ * 作业发布
  * - POST /api/teach/homework/publish  { title, content, chapterId, deadline, classId | grade, allowLateSubmit, totalScore }
  * - GET  /api/teach/homework/list     { id, title, content, chapterId, deadline, status, createTime }
  * - GET  /api/teach/homework/detail?homeworkId=   作业详情 + 题目完整快照（含后端给的 statusName）
  * - POST /api/teach/homework/close    { homeworkId, closeReason? } 截止收题，返回后端提示语
+ * - GET  /api/class/list              班级下拉（classId 取 classId 字段）
  *
  * 字段口径：
  * - 发布范围二选一：指定班级传 classId，全年级传 grade，提交时只带其一；
@@ -17,8 +18,9 @@ import { computed, onMounted, ref } from 'vue';
 import { Ban, CalendarClock, Eye, FileEdit, Loader2, Send } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { fetchChapters } from '@/api/knowledge';
-import { closeHomework, fetchHomeworkDetail, fetchPublishedHomeworks, fetchTeacherClasses, publishHomework } from '@/api/teacher';
-import type { TeacherClass } from '@/api/teacher';
+import { closeHomework, fetchHomeworkDetail, fetchPublishedHomeworks, publishHomework } from '@/api/teacher';
+import { fetchClasses } from '@/api/class';
+import type { ClassResponse } from '@/types/class';
 import type { Chapter } from '@/types/knowledge';
 import type {
   HomeworkDetail,
@@ -38,7 +40,7 @@ const SCOPES: { key: Scope; label: string }[] = [
 ];
 
 const chapters = ref<Chapter[]>([]);
-const classes = ref<TeacherClass[]>([]);
+const classes = ref<ClassResponse[]>([]);
 const published = ref<PublishedHomework[]>([]);
 const loading = ref(true);
 const publishing = ref(false);
@@ -74,7 +76,42 @@ const segSliderStyle = computed(() => ({
 
 const chapterTitle = (id: number) => chapters.value.find((c) => c.id === id)?.title ?? `章节 ${id}`;
 const classNameOf = (id: number | null) =>
-  id == null ? '' : classes.value.find((c) => c.id === id)?.className ?? `班级 ${id}`;
+  id == null ? '' : classes.value.find((c) => c.classId === id)?.className ?? `班级 ${id}`;
+
+/** 章节树下拉节点：与 AI 备课页保持同一套结构 */
+interface ChapterNode {
+  id: number;
+  children?: ChapterNode[];
+  label: string;
+}
+
+const chapterTree = computed<ChapterNode[]>(() => buildChapterTree(chapters.value));
+
+/**
+ * 章标题（level=1）本身已带「第 N 章」，再拼编号会变成「1 第 1 章 …」，
+ * 所以只对没有编号前缀的标题（节 / 小节）拼 chapterCode。
+ */
+function chapterLabel(c: Chapter): string {
+  const hasNumber = /^第\s*\d+\s*[章节]/.test(c.title) || c.title.startsWith(c.chapterCode);
+  return hasNumber ? c.title : `${c.chapterCode} ${c.title}`;
+}
+
+/** 扁平列表（靠 parentId 组织）→ 树；父节点缺失的数据挂到根上，避免整棵子树消失 */
+function buildChapterTree(list: Chapter[]): ChapterNode[] {
+  const byParent = new Map<number, Chapter[]>();
+  const ids = new Set(list.map((c) => c.id));
+  for (const c of list) {
+    const parentKey = ids.has(c.parentId) ? c.parentId : 0;
+    const bucket = byParent.get(parentKey);
+    if (bucket) bucket.push(c);
+    else byParent.set(parentKey, [c]);
+  }
+  const toNode = (c: Chapter): ChapterNode => {
+    const kids = (byParent.get(c.id) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+    return { id: c.id, label: chapterLabel(c), ...(kids.length ? { children: kids.map(toNode) } : {}) };
+  };
+  return (byParent.get(0) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder).map(toNode);
+}
 
 function fmt(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -92,7 +129,7 @@ const isExpired = (hw: PublishedHomework) => {
 
 /** 详情接口回填的中文 statusName 优先，其次用列表 status 的码值映射 */
 function hwStatusText(hw: PublishedHomework): string {
-  return statusNameById.value[hw.id] ?? HOMEWORK_STATUS_LABELS[hw.status] ?? `未知状态 ${hw.status}`;
+  return statusNameById.value[hw.id] ?? HOMEWORK_STATUS_LABELS[hw.status] ?? '作业状态未知';
 }
 
 function hwStatusBadgeClass(hw: PublishedHomework): string {
@@ -119,7 +156,7 @@ async function load() {
   try {
     [chapters.value, classes.value, published.value] = await Promise.all([
       fetchChapters(),
-      fetchTeacherClasses(),
+      fetchClasses(),
       fetchPublishedHomeworks(),
     ]);
   } catch {
@@ -171,7 +208,7 @@ async function handlePublish() {
       scopeText = `全年级 ${payload.grade}`;
     }
     const id = await publishHomework(payload);
-    ElMessage.success(`作业已发布到${scopeText}${id ? `（ID ${id}）` : ''}，学生端可见`);
+    ElMessage.success(`作业已发布到${scopeText}${id ? `（编号 ${id}）` : ''}，学生端可见`);
     await refreshList();
     resetForm();
   } catch {
@@ -324,7 +361,7 @@ async function handleClose(hw: PublishedHomework) {
           <div>
             <h2 class="st-card__title">发布新作业</h2>
             <p class="st-card__hint">
-              POST /api/teach/homework/publish · 标题、正文要求、章节、截止时间 + 班级/年级范围
+              填写标题、作答要求、教材章节与截止时间，再选择发布到班级或全年级
             </p>
           </div>
         </div>
@@ -335,9 +372,18 @@ async function handleClose(hw: PublishedHomework) {
           </div>
           <div class="form-item">
             <label class="form-label">教材章节</label>
-            <el-select v-model="formChapterId" placeholder="选择章节" filterable style="width: 100%;">
-              <el-option v-for="c in chapters" :key="c.id" :label="c.title" :value="c.id" />
-            </el-select>
+            <el-tree-select
+              v-model="formChapterId"
+              :data="chapterTree"
+              node-key="id"
+              :props="{ label: 'label' }"
+              placeholder="选择章节"
+              filterable
+              check-strictly
+              :expand-on-click-node="false"
+              popper-class="chapter-tree-popper"
+              style="width: 100%;"
+            />
           </div>
           <div class="form-item">
             <label class="form-label">截止时间</label>
@@ -371,7 +417,7 @@ async function handleClose(hw: PublishedHomework) {
           <div class="form-row">
             <div class="form-item" style="flex: 1;">
               <label class="form-label">
-                {{ scope === 'class' ? '布置班级（classId，必填）' : '年级（grade，必填）' }}
+                {{ scope === 'class' ? '布置班级（必选）' : '年级（必填）' }}
               </label>
               <el-select
                 v-if="scope === 'class'"
@@ -380,7 +426,7 @@ async function handleClose(hw: PublishedHomework) {
                 filterable
                 style="width: 100%;"
               >
-                <el-option v-for="c in classes" :key="c.id" :label="c.className" :value="c.id" />
+                <el-option v-for="c in classes" :key="c.classId" :label="c.className" :value="c.classId" />
               </el-select>
               <input
                 v-else
@@ -398,24 +444,24 @@ async function handleClose(hw: PublishedHomework) {
 
           <div class="form-row">
             <div class="form-item" style="flex: 1;">
-              <label class="form-label">允许迟交（allowLateSubmit）</label>
+              <label class="form-label">允许迟交</label>
               <div class="switch-line">
                 <el-switch v-model="allowLateSubmit" :active-value="1" :inactive-value="0" />
                 <span class="switch-text">{{ allowLateSubmit === 1 ? '过期后学生仍可提交' : '过期即停止收题' }}</span>
               </div>
             </div>
-            <!-- 发布接口无 questionCount 字段，题目由题库抽题/出题接口决定 -->
+            <!-- 题量控件仅作展示，提交时不带该字段 -->
             <div class="form-item" style="width: 150px;">
               <label class="form-label">
                 题量
-                <span class="st-badge st-badge--neutral field-note">接口无该字段</span>
+                <span class="st-badge st-badge--neutral field-note">暂未开放</span>
               </label>
               <el-input-number v-model="questionCount" :min="3" :max="20" disabled style="width: 100%;" />
             </div>
           </div>
 
           <div class="form-item">
-            <label class="form-label">作答要求（对应接口 content）</label>
+            <label class="form-label">作答要求</label>
             <textarea
               v-model="content"
               class="form-textarea"
@@ -425,8 +471,8 @@ async function handleClose(hw: PublishedHomework) {
           </div>
 
           <p class="form-foot">
-            题量字段发布接口仍未提供，题目由题库抽题/出题接口决定；
-            布置班级与全年级互斥，提交时只带上其一。
+            题量暂不能在这里设置，题目由题库组题后确定；
+            布置班级与全年级只需选择其中一种填写。
           </p>
 
           <div style="display: flex; justify-content: flex-end; margin-top: 4px;">
@@ -445,7 +491,7 @@ async function handleClose(hw: PublishedHomework) {
           <CalendarClock :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">已发布作业</h2>
-            <p class="st-card__hint">共 {{ published.length }} 份 · GET /api/teach/homework/list</p>
+            <p class="st-card__hint">共 {{ published.length }} 份 · 只列出你自己发布的作业</p>
           </div>
         </div>
         <div class="st-card__body hw-list">
@@ -458,8 +504,8 @@ async function handleClose(hw: PublishedHomework) {
           </div>
           <template v-else>
             <p class="list-note">
-              状态徽章按后端约定的码值渲染（1未发布 / 2已发布 / 3已截止 / 4已归档），
-              已打开过详情的作业优先采用后端返回的中文 statusName；班级、总分等字段列表接口不返回，需进详情查看。
+              状态徽章表示这份作业当前所处的阶段（未发布、已发布、已截止、已归档），
+              查看过详情的作业会显示最新状态；班级、总分等信息列表里看不到，点开详情即可查阅。
             </p>
             <div v-for="hw in published" :key="hw.id" class="hw-item">
               <div class="hw-item__top">
@@ -468,22 +514,17 @@ async function handleClose(hw: PublishedHomework) {
               </div>
               <div class="hw-item__meta">
                 <span class="st-badge st-badge--outline">{{ chapterTitle(hw.chapterId) }}</span>
-                <span class="hw-item__id">ID {{ hw.id }} · status {{ hw.status }}</span>
+                <span class="hw-item__id">作业编号 {{ hw.id }}</span>
               </div>
               <div class="hw-item__info">截止 {{ fmt(hw.deadline) }} · 发布于 {{ fmt(hw.createTime) }}</div>
               <div class="hw-item__req">{{ hw.content }}</div>
               <div class="hw-item__ops">
-                <button class="st-text-btn" title="GET /api/teach/homework/detail?homeworkId=" @click="openDetail(hw)">
+                <button class="st-text-btn" @click="openDetail(hw)">
                   <Eye :size="13" /> 详情
                 </button>
                 <button
                   class="st-text-btn st-text-btn--danger"
                   :disabled="isClosed(hw) || closingId === hw.id"
-                  :title="
-                    isClosed(hw)
-                      ? '该作业已截止收题'
-                      : 'POST /api/teach/homework/close · 截止收题并记录关闭原因'
-                  "
                   @click="handleClose(hw)"
                 >
                   <Loader2 v-if="closingId === hw.id" :size="13" class="spin" />
@@ -504,9 +545,9 @@ async function handleClose(hw: PublishedHomework) {
           <div>
             <h3 class="dialog__title">
               {{ detail?.title ?? '作业详情' }}
-              <span v-if="detail" class="st-badge st-badge--neutral">{{ detail.statusName || '状态名为空' }}</span>
+              <span v-if="detail" class="st-badge st-badge--neutral">{{ detail.statusName || '作业状态未知' }}</span>
             </h3>
-            <p class="dialog__sub">GET /api/teach/homework/detail?homeworkId={{ detail?.id ?? '—' }}</p>
+            <p class="dialog__sub">作业编号 {{ detail?.id ?? '—' }}</p>
           </div>
           <button class="st-btn st-btn--ghost" @click="closeDetail">关闭</button>
         </header>
@@ -528,8 +569,8 @@ async function handleClose(hw: PublishedHomework) {
                 </dd>
               </div>
               <div class="detail-cell">
-                <dt>班级 ID / 年级</dt>
-                <dd>classId {{ detail.classId || '—' }} · grade {{ detail.grade || '—' }}</dd>
+                <dt>班级编号 / 年级</dt>
+                <dd>{{ detail.classId || '—' }} · {{ detail.grade || '—' }}</dd>
               </div>
               <div class="detail-cell">
                 <dt>作业总分</dt>
@@ -571,9 +612,9 @@ async function handleClose(hw: PublishedHomework) {
             </div>
 
             <div class="detail-block">
-              <h4 class="detail-block__title">题目快照（{{ detail.questions?.length ?? 0 }} 题，按 sortOrder 升序）</h4>
+              <h4 class="detail-block__title">题目快照（{{ detail.questions?.length ?? 0 }} 题，按题目先后排列）</h4>
               <p v-if="!questionRows.length" class="detail-block__empty">
-                该作业没有题目快照，题目由题库抽题/出题接口决定
+                这份作业还没有题目，题目会在题库组题后出现
               </p>
               <table v-else class="q-table">
                 <thead>
@@ -593,7 +634,7 @@ async function handleClose(hw: PublishedHomework) {
                     <td class="cell-mono">{{ i + 1 }}</td>
                     <td class="cell-content">{{ row.q.content || '—' }}</td>
                     <td>
-                      <span class="st-badge st-badge--outline">{{ row.q.typeName || `type ${row.q.type}` }}</span>
+                      <span class="st-badge st-badge--outline">{{ row.q.typeName || `题型 ${row.q.type}` }}</span>
                     </td>
                     <td class="cell-mono">{{ row.q.difficulty }}</td>
                     <td class="cell-mono">{{ row.q.score }}</td>
@@ -602,14 +643,14 @@ async function handleClose(hw: PublishedHomework) {
                       <ul v-else-if="row[key].parsed" class="json-list">
                         <li v-for="(item, idx) in row[key].items" :key="idx">{{ item }}</li>
                       </ul>
-                      <span v-else class="json-raw" title="JSON.parse 失败，按原文展示">{{ row[key].text }}</span>
+                      <span v-else class="json-raw">{{ row[key].text }}</span>
                     </td>
                   </tr>
                 </tbody>
               </table>
               <p v-if="questionRows.length" class="json-note">
-                options / answer / knowledgePoints 后端返回的是 JSON 字符串，前端 JSON.parse 后逐项展示；
-                解析失败时按原文展示并标注。
+                选项、标准答案与知识点会逐项列出；
+                无法拆分的题目会按原文整段显示。
               </p>
             </div>
           </template>
@@ -1017,5 +1058,30 @@ async function handleClose(hw: PublishedHomework) {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+</style>
+
+<style>
+/* 章节树下拉浮层挂在 body 上，scoped 样式选不到；与 AI 备课页共用同一套黑白样式 */
+.chapter-tree-popper .el-tree-node__content {
+  border-radius: var(--radius-sm);
+}
+
+.chapter-tree-popper .el-tree-node__content:hover {
+  background: var(--bg-subtle);
+}
+
+.chapter-tree-popper .el-tree-node.is-current > .el-tree-node__content {
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.chapter-tree-popper .el-tree-node__expand-icon {
+  color: var(--text-tertiary);
+}
+
+.chapter-tree-popper .el-tree-node__expand-icon.is-leaf {
+  color: transparent;
 }
 </style>
