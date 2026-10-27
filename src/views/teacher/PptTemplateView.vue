@@ -1,26 +1,38 @@
 <script setup lang="ts">
 /**
  * PPT 模板与主题（接真实接口）
- * - GET  /api/teach/ppt/template            4 套预置外观主题（后端常量，不查库）
+ * - GET  /api/teach/ppt/themes              后端可管理的主题列表（code / name / version，不含 CSS）
+ * - GET  /api/teach/ppt/themes/{code}       单个主题完整 CSS（按 version 缓存，见 usePptTheme）
  * - GET  /api/teach/ppt/template/list       系统模板 + 本人自定义模板，按 sortOrder 升序
  * - GET  /api/teach/ppt/template/detail/{id} 模板详情（含 structure_md 骨架全文）
  * - POST /api/teach/ppt/template/save       id 为空新增，非空改本人模板，系统模板一律拒绝
  *
- * 注意：备课生成接口 POST /api/agent/teach/prepare 目前不接收模板 ID，
- * 后端 prepare/record/detail 的 templateId 也标注为"待加列后落库，当前返回 null"，
- * 因此本页维护的模板暂未闭环作用于生成结果，只做维护与预览。
+ * 前端不硬编码任何主题内容：新增/修改主题都由后端插数据，页面按 themeCode 动态加载 CSS 并注入 Shadow DOM。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
-import { Eye, Loader2, Pencil, Plus, Presentation, Save, Sparkles } from 'lucide-vue-next';
+import {
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  Loader2,
+  Pencil,
+  Plus,
+  Presentation,
+  Save,
+  Sparkles,
+} from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { fetchPptTemplateDetail, fetchPptTemplates, fetchPptThemes, savePptTemplate } from '@/api/teacher';
 import type { PptTemplate, PptTemplateDetail, PptTheme } from '@/types/teacher';
-import { renderMarkdown } from '@/utils/markdown';
+import PptRenderer from '@/components/ppt/PptRenderer.vue';
+import { PPT_THEME_DEMO_MARKDOWN } from '@/composables/usePptTheme';
 
 const themes = ref<PptTheme[]>([]);
 const templates = ref<PptTemplate[]>([]);
 const loadingThemes = ref(false);
 const loadingList = ref(false);
+/** 主题卡片收起/展开（收起时卸载预览，节省多个 Shadow DOM 的开销） */
+const themesCollapsed = ref(false);
 
 const detailVisible = ref(false);
 const detail = ref<PptTemplateDetail | null>(null);
@@ -42,6 +54,17 @@ const customCount = computed(() => templates.value.length - systemCount.value);
 function themeName(code: string): string {
   return themes.value.find((t) => t.code === code)?.name ?? code;
 }
+
+/** 主题版本号：传给渲染器，用于本地缓存失效 */
+function themeVersion(code: string): number | undefined {
+  return themes.value.find((t) => t.code === code)?.version;
+}
+
+/** 当前表单选中的主题版本 */
+const selectedThemeVersion = computed(() => themeVersion(form.themeCode));
+
+/** 骨架为空时用固定示例页预览外观，避免右侧一片空白 */
+const previewMarkdown = computed(() => form.structureMd.trim() || PPT_THEME_DEMO_MARKDOWN);
 
 async function loadThemes() {
   loadingThemes.value = true;
@@ -158,7 +181,7 @@ onMounted(() => {
     <header class="st-page-header">
       <h1 class="st-page-title">PPT 模板与主题</h1>
       <p class="st-page-subtitle">
-        课堂 PPT 的外观主题与内容骨架维护 · 系统模板只读，可另存为自己的自定义模板
+        维护课堂 PPT 的外观主题和页面内容结构 · 系统模板只能查看，可以另存为自己的模板
       </p>
     </header>
 
@@ -168,22 +191,46 @@ onMounted(() => {
         <Sparkles :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">预置外观主题</h2>
-          <p class="st-card__hint">GET /api/teach/ppt/template · 后端常量返回，共 {{ themes.length }} 套</p>
+          <p class="st-card__hint">
+            主题由后端统一维护，共 {{ themes.length }} 套 · 每张卡片使用同一页示例幻灯片展示实际外观
+          </p>
         </div>
-        <Loader2 v-if="loadingThemes" :size="15" class="spin" />
+        <div class="header-actions">
+          <Loader2 v-if="loadingThemes" :size="15" class="spin" />
+          <button
+            class="st-text-btn theme-collapse"
+            type="button"
+            :aria-expanded="themesCollapsed ? 'false' : 'true'"
+            @click="themesCollapsed = !themesCollapsed"
+          >
+            <ChevronDown v-if="themesCollapsed" :size="14" />
+            <ChevronUp v-else :size="14" />
+            {{ themesCollapsed ? '展开' : '收起' }}
+          </button>
+        </div>
       </div>
-      <div class="st-card__body">
+      <div v-if="!themesCollapsed" class="st-card__body">
         <div v-if="!loadingThemes && themes.length === 0" class="st-empty">
           <Presentation :size="22" class="st-empty__icon" />
           <p class="st-empty__text">暂无主题数据</p>
         </div>
         <div v-else class="theme-grid">
           <article v-for="t in themes" :key="t.code" class="theme-item">
+            <div class="theme-item__preview">
+              <PptRenderer
+                :structure-md="PPT_THEME_DEMO_MARKDOWN"
+                :theme-code="t.code"
+                :theme-version="t.version"
+              />
+            </div>
             <header class="theme-item__top">
               <span class="theme-item__name">{{ t.name }}</span>
-              <code class="theme-item__code">{{ t.code }}</code>
+              <span class="theme-item__meta">
+                <code class="theme-item__code">{{ t.code }}</code>
+                <span v-if="t.version != null" class="theme-item__ver">v{{ t.version }}</span>
+              </span>
             </header>
-            <p class="theme-item__desc">{{ t.description }}</p>
+            <p v-if="t.description" class="theme-item__desc">{{ t.description }}</p>
           </article>
         </div>
       </div>
@@ -196,7 +243,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">模板列表</h2>
           <p class="st-card__hint">
-            GET /api/teach/ppt/template/list · 系统 {{ systemCount }} 个 / 自定义 {{ customCount }} 个，按排序值升序
+            系统模板 {{ systemCount }} 个 / 自定义模板 {{ customCount }} 个，按排好的顺序显示
           </p>
         </div>
         <div class="header-actions">
@@ -214,7 +261,7 @@ onMounted(() => {
         <table v-else class="tpl-table">
           <thead>
             <tr>
-              <th class="col-id">ID</th>
+              <th class="col-id">编号</th>
               <th>模板名称</th>
               <th class="col-desc">说明</th>
               <th class="col-theme">主题</th>
@@ -242,7 +289,7 @@ onMounted(() => {
                 <button
                   class="st-text-btn"
                   :disabled="t.isSystem === 1"
-                  :title="t.isSystem === 1 ? '系统模板只读，保存接口一律拒绝修改' : '编辑本人模板'"
+                  :title="t.isSystem === 1 ? '系统模板只能查看，不能修改' : '编辑自己的模板'"
                   @click="openEdit(t)"
                 >
                   <Pencil :size="13" /> 编辑
@@ -261,7 +308,7 @@ onMounted(() => {
           <div>
             <h3 class="dialog__title">{{ detail?.name ?? '模板详情' }}</h3>
             <p class="dialog__sub">
-              GET /api/teach/ppt/template/detail/{{ detail?.id }}
+              模板编号 {{ detail?.id ?? '—' }}
               <span v-if="detail" class="st-badge st-badge--neutral">{{ themeName(detail.themeCode) }}</span>
             </p>
           </div>
@@ -277,10 +324,15 @@ onMounted(() => {
               alt="模板预览图"
               class="detail-preview"
             />
-            <div class="md" v-html="renderMarkdown(detail.structureMd)" />
+            <div class="detail-render">
+              <PptRenderer
+                :structure-md="detail.structureMd"
+                :theme-code="detail.themeCode"
+                :theme-version="themeVersion(detail.themeCode)"
+              />
+            </div>
             <p class="detail-foot">
-              后端 prepare/record/detail 的 templateId 目前恒为 null（列未就绪），
-              备课生成接口也未接收模板 ID，模板与生成结果尚未闭环。
+              预览按模板绑定的外观主题与骨架内容实时渲染；主题 CSS 由后端统一维护，更新后自动生效。
             </p>
           </template>
         </div>
@@ -293,40 +345,64 @@ onMounted(() => {
         <header class="dialog__head">
           <div>
             <h3 class="dialog__title">{{ editingId ? '编辑自定义模板' : '新增自定义模板' }}</h3>
-            <p class="dialog__sub">POST /api/teach/ppt/template/save</p>
+            <p class="dialog__sub">保存后即可在模板列表里使用这个自定义模板</p>
           </div>
           <button class="st-btn st-btn--ghost" @click="confirmCloseForm">关闭</button>
         </header>
         <div class="dialog__body">
-          <div class="form-item">
-            <label class="form-label">模板名称（name，必填）</label>
-            <input v-model="form.name" class="form-input" maxlength="100" placeholder="如：面向对象专题骨架" />
-          </div>
-          <div class="form-row">
-            <div class="form-item" style="flex: 1;">
-              <label class="form-label">视觉主题（themeCode，限定 4 套预置）</label>
-              <el-select v-model="form.themeCode" placeholder="选择主题" style="width: 100%;">
-                <el-option v-for="t in themes" :key="t.code" :label="`${t.name}（${t.code}）`" :value="t.code" />
-              </el-select>
+          <div class="form-layout">
+            <div class="form-main">
+              <div class="form-item">
+                <label class="form-label">模板名称（必填）</label>
+                <input v-model="form.name" class="form-input" maxlength="100" placeholder="如：面向对象专题骨架" />
+              </div>
+              <div class="form-row">
+                <div class="form-item" style="flex: 1;">
+                  <label class="form-label">外观主题（由后端主题库提供）</label>
+                  <el-select v-model="form.themeCode" placeholder="选择主题" style="width: 100%;">
+                    <el-option v-for="t in themes" :key="t.code" :label="`${t.name}（${t.code}）`" :value="t.code" />
+                  </el-select>
+                </div>
+                <div class="form-item" style="width: 160px;">
+                  <label class="form-label">模板编号</label>
+                  <input :value="editingId ?? '新增时自动生成'" class="form-input" readonly />
+                </div>
+              </div>
+              <div class="form-item">
+                <label class="form-label">模板说明（可选）</label>
+                <input v-model="form.description" class="form-input" maxlength="200" placeholder="一句话说明适用场景" />
+              </div>
+              <div class="form-item">
+                <label class="form-label">内容结构骨架（必填）</label>
+                <textarea
+                  v-model="form.structureMd"
+                  class="form-textarea"
+                  rows="12"
+                  placeholder="逐页写清标题和要点：每页一行标题（前面加 #），要点前面加 - 。例如：&#10;# 封面&#10;- 课程名 / 章节号&#10;# 本节目标&#10;# 案例代码"
+                ></textarea>
+              </div>
             </div>
-            <div class="form-item" style="width: 160px;">
-              <label class="form-label">模板 ID</label>
-              <input :value="editingId ?? '留空即新增'" class="form-input" readonly />
-            </div>
+
+            <!-- 外观 + 骨架实时联排预览：改动主题或骨架都会立刻重绘 -->
+            <aside class="form-preview">
+              <div class="form-preview__head">
+                <span class="form-preview__title">实时预览</span>
+                <span class="form-preview__hint">
+                  {{ form.structureMd.trim() ? '当前骨架' : '示例内容' }}
+                </span>
+              </div>
+              <div class="form-preview__scroll">
+                <PptRenderer
+                  v-if="form.themeCode"
+                  :structure-md="previewMarkdown"
+                  :theme-code="form.themeCode"
+                  :theme-version="selectedThemeVersion"
+                />
+                <p v-else class="form-preview__empty">请选择外观主题</p>
+              </div>
+            </aside>
           </div>
-          <div class="form-item">
-            <label class="form-label">模板说明（description，可选）</label>
-            <input v-model="form.description" class="form-input" maxlength="200" placeholder="一句话说明适用场景" />
-          </div>
-          <div class="form-item">
-            <label class="form-label">内容结构骨架（structureMd，必填）</label>
-            <textarea
-              v-model="form.structureMd"
-              class="form-textarea"
-              rows="12"
-              placeholder="用 Markdown 编写每页骨架，例如：&#10;# 封面&#10;- 课程名 / 章节号&#10;# 本节目标&#10;# 案例代码"
-            ></textarea>
-          </div>
+
           <div class="dialog__actions">
             <button class="st-btn st-btn--secondary" @click="confirmCloseForm">取消</button>
             <button class="st-btn st-btn--primary" :disabled="!canSave" @click="handleSave">
@@ -360,17 +436,25 @@ onMounted(() => {
   gap: 10px;
 }
 
+.theme-collapse {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* 主题卡片 */
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 16px;
 }
 
 .theme-item {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
+  padding: 14px 16px 16px;
   background: var(--bg-surface);
   transition: border-color var(--transition), background var(--transition);
 }
@@ -378,6 +462,10 @@ onMounted(() => {
 .theme-item:hover {
   border-color: var(--border-strong);
   background: var(--bg-subtle);
+}
+
+.theme-item__preview {
+  margin-bottom: 12px;
 }
 
 .theme-item__top {
@@ -393,6 +481,13 @@ onMounted(() => {
   color: var(--text-primary);
 }
 
+.theme-item__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .theme-item__code {
   font-family: 'JetBrains Mono', Consolas, monospace;
   font-size: 11.5px;
@@ -401,6 +496,12 @@ onMounted(() => {
   border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 1px 6px;
+}
+
+.theme-item__ver {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 .theme-item__desc {
@@ -494,12 +595,12 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  z-index: 1500;
   padding: 24px;
 }
 
 .dialog {
-  width: min(880px, 100%);
+  width: min(1180px, 100%);
   max-height: 86vh;
   display: flex;
   flex-direction: column;
@@ -565,6 +666,10 @@ onMounted(() => {
   margin-bottom: 14px;
 }
 
+.detail-render {
+  margin-top: 6px;
+}
+
 .detail-foot {
   margin: 18px 0 0;
   padding: 10px 12px;
@@ -625,71 +730,58 @@ onMounted(() => {
   resize: vertical;
 }
 
-/* Markdown 渲染 */
-.md {
-  font-size: 13px;
-  line-height: 1.75;
-  color: var(--text-primary);
-  word-break: break-word;
+/* 新增 / 编辑：左侧表单 + 右侧实时预览 */
+.form-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
 }
 
-.md :deep(.md-h) {
-  margin: 14px 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
+.form-main {
+  min-width: 0;
 }
 
-.md :deep(.md-p) {
-  margin: 4px 0;
-}
-
-.md :deep(.md-list) {
-  margin: 4px 0 8px 20px;
-  padding: 0;
-}
-
-.md :deep(.md-list li) {
-  margin: 2px 0;
-}
-
-.md :deep(.md-quote) {
-  margin: 8px 0;
-  padding: 6px 12px;
-  border-left: 2px solid var(--border-strong);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-}
-
-.md :deep(.md-pre) {
-  margin: 8px 0;
+.form-preview {
+  position: sticky;
+  top: 0;
+  min-width: 0;
   padding: 12px;
-  background: var(--bg-subtle);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  overflow-x: auto;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12.5px;
-}
-
-.md :deep(.md-code) {
-  padding: 1px 5px;
   background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12px;
 }
 
-.md :deep(.md-hr) {
-  margin: 12px 0;
-  border: none;
-  border-top: 1px solid var(--border-default);
+.form-preview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
-.md :deep(.md-link) {
+.form-preview__title {
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--text-primary);
-  text-decoration: underline;
+}
+
+.form-preview__hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.form-preview__scroll {
+  max-height: 58vh;
+  padding-right: 2px;
+  overflow-y: auto;
+}
+
+.form-preview__empty {
+  margin: 42px 0;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-tertiary);
 }
 
 .spin {
@@ -699,6 +791,20 @@ onMounted(() => {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 960px) {
+  .form-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form-preview {
+    position: static;
+  }
+
+  .form-preview__scroll {
+    max-height: 46vh;
   }
 }
 

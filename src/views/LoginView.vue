@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { GraduationCap, ShieldCheck } from 'lucide-vue-next';
 import { useAuthStore } from '@/stores/auth';
-import type { AuthMode } from '@/types/auth';
+import AdminRegisterCard from '@/components/auth/AdminRegisterCard.vue';
+import type { AuthMode, LoginResult } from '@/types/auth';
+import type { UserRoleName } from '@/types/user';
 
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 
+/** 当前展示的卡片：登录 / 管理员注册。两者同页切换，不跳路由、不进运维端布局 */
+const view = ref<'login' | 'admin'>('login');
 const mode = ref<AuthMode>('login');
 const loading = ref(false);
 const formRef = ref();
@@ -34,14 +38,162 @@ watch(mode, () => {
   formRef.value?.clearValidate();
 });
 
+/** 被拦截器踢回登录页时带上原因，这里只负责把话说明白 */
+onMounted(() => {
+  const reason = route.query.reason as string | undefined;
+  if (reason === 'expired') ElMessage.warning('登录已过期，请重新登录');
+  else if (reason === 'forbidden') ElMessage.error('检测到越权访问，已强制退出');
+  // 改密码 / 封号 / 服务端主动吊销：用户是「突然」被下线的，必须给个说法
+  else if (reason === 'kicked') ElMessage.warning('账号状态已变更，请重新登录');
+
+  nextTick(() => moveSlider(false));
+  window.addEventListener('resize', handleResize);
+});
+
 function switchMode(target: AuthMode) {
   if (mode.value === target) return;
   mode.value = target;
 }
 
-/** 管理员注册入口：已对接路由 /admin/register（注册提交逻辑在该页，见 @/api/user.adminRegister） */
-function gotoAdminRegister() {
-  router.push('/admin/register');
+/* ---------------- Liquid tab indicator ---------------- */
+const sliderRef = ref<HTMLElement | null>(null);
+const loginTabRef = ref<HTMLButtonElement | null>(null);
+const registerTabRef = ref<HTMLButtonElement | null>(null);
+
+let sliderAnimation: Animation | null = null;
+
+function currentSliderFrame(): { left: number; width: number } {
+  const slider = sliderRef.value;
+  if (!slider) return { left: 0, width: 0 };
+  const styles = getComputedStyle(slider);
+  return { left: parseFloat(styles.left), width: parseFloat(styles.width) };
+}
+
+/**
+ * Liquid indicator: the pill stretches along its travel direction, lands with a
+ * subtle overshoot, compresses a touch, then settles back to the tab width.
+ * WAAPI (instead of CSS transition) lets rapid clicks continue from the exact
+ * current frame instead of snapping back to the previous target.
+ */
+function moveSlider(animate = true) {
+  const slider = sliderRef.value;
+  const target = mode.value === 'login' ? loginTabRef.value : registerTabRef.value;
+  if (!slider || !target) return;
+
+  const toLeft = target.offsetLeft;
+  const toWidth = target.offsetWidth;
+
+  if (!animate) {
+    sliderAnimation?.cancel();
+    sliderAnimation = null;
+    slider.style.left = `${toLeft}px`;
+    slider.style.width = `${toWidth}px`;
+    return;
+  }
+
+  // Read the live frame first, then cancel the old animation and continue from it.
+  const current = currentSliderFrame();
+  sliderAnimation?.cancel();
+  sliderAnimation = null;
+
+  const fromLeft = Number.isFinite(current.left) ? current.left : toLeft;
+  const fromWidth = Number.isFinite(current.width) ? current.width : toWidth;
+  const distance = toLeft - fromLeft;
+
+  if (Math.abs(distance) < 0.5 && Math.abs(toWidth - fromWidth) < 0.5) {
+    slider.style.left = `${toLeft}px`;
+    slider.style.width = `${toWidth}px`;
+    return;
+  }
+
+  const stretch = Math.min(24, Math.max(12, Math.abs(distance) * 0.22));
+  const overshoot = Math.min(4, Math.max(2, Math.abs(distance) * 0.04));
+  const dir = distance >= 0 ? 1 : -1;
+
+  sliderAnimation = slider.animate(
+    [
+      { left: `${fromLeft}px`, width: `${fromWidth}px`, offset: 0 },
+      { left: `${fromLeft + distance * 0.68}px`, width: `${fromWidth + stretch}px`, offset: 0.46 },
+      { left: `${toLeft + overshoot * dir}px`, width: `${Math.max(20, toWidth - 3)}px`, offset: 0.76 },
+      { left: `${toLeft - overshoot * 0.3 * dir}px`, width: `${toWidth + 1.5}px`, offset: 0.9 },
+      { left: `${toLeft}px`, width: `${toWidth}px`, offset: 1 },
+    ],
+    {
+      duration: 460,
+      easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+      fill: 'forwards',
+    },
+  );
+
+  sliderAnimation.onfinish = () => {
+    slider.style.left = `${toLeft}px`;
+    slider.style.width = `${toWidth}px`;
+    sliderAnimation?.cancel();
+    sliderAnimation = null;
+  };
+}
+
+watch(mode, () => nextTick(() => moveSlider(true)));
+
+function handleResize() {
+  moveSlider(false);
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize);
+  sliderAnimation?.cancel();
+  sliderAnimation = null;
+});
+
+/**
+ * 登录后去向：redirect > 多角色选端页 > 后端算好的 defaultRoute > 按角色兜底。
+ * 只接受站内绝对路径，`//evil.com` 这类协议相对地址一律忽略，防 open redirect。
+ * 还要按路由 meta.roles 校验落点：登录页可能带着上一次访问学生页留下的
+ * redirect（如 /student/dashboard），教师登录后直接跳过去只会得到 403。
+ */
+function isKnownRole(role: unknown): role is UserRoleName {
+  return role === 'ADMIN' || role === 'TEACHER' || role === 'STUDENT';
+}
+
+function canEnter(path: string, roles: string[]): boolean {
+  const resolved = router.resolve(path);
+  const required = (resolved.meta.roles as string[] | undefined) ?? [];
+  if (!required.length) return true;
+  // 角色未知时不再“放行”：否则可能把教师送进学生页，随后被守卫 403 拦下
+  return roles.length > 0 && required.some((role) => roles.includes(role));
+}
+
+function isInternalPath(path: unknown): path is string {
+  return typeof path === 'string' && path.startsWith('/') && !path.startsWith('//');
+}
+
+/** 登录落点不接受 403 / 登录页本身，避免登录后立刻又被送回 403 或登录页 */
+function isUsableTarget(path: unknown): path is string {
+  return isInternalPath(path) && path !== '/403' && !path.startsWith('/login');
+}
+
+function resolveTarget(session: LoginResult) {
+  // 落点必须和路由守卫用同一份角色数据（守卫读 store；token 声明优先于登录响应），
+  // 否则会出现“按登录响应跳到教师页、守卫按 token 角色判成越权”的 403。
+  // 登录响应里的角色先做白名单过滤：后端若下发 ROLE_TEACHER / 小写 teacher 这类值，
+  // 不能被当成有效角色，更不能让 resolveHome 落到 /403。
+  const sessionRoles = (Array.isArray(session.roles) ? session.roles : [])
+    .map((role) => String(role).trim().replace(/^ROLE_/i, ''))
+    .filter(isKnownRole);
+  const roles: UserRoleName[] = authStore.roles.length ? authStore.roles : sessionRoles;
+  const redirect = route.query.redirect;
+
+  // 多角色 / 角色未知一律先进选端页，避免带着跨端 redirect 直接进某个端
+  if (roles.length !== 1) return '/choose-portal';
+
+  if (isUsableTarget(redirect) && canEnter(redirect, roles)) {
+    return redirect;
+  }
+
+  const fallback = isUsableTarget(session.defaultRoute) && canEnter(session.defaultRoute, roles)
+    ? session.defaultRoute
+    : authStore.resolveHome(roles);
+  return fallback;
 }
 
 async function handleSubmit() {
@@ -54,23 +206,15 @@ async function handleSubmit() {
 
   loading.value = true;
   try {
-    if (mode.value === 'login') {
-      const ok = await authStore.login({ ...form });
-      if (ok) {
-        ElMessage.success('登录成功');
-        const redirect = (route.query.redirect as string) || '/';
-        router.push(redirect);
-      }
-      // 失败时错误提示由响应拦截器统一渲染后端 message
-    } else {
-      const ok = await authStore.register({ ...form });
-      if (ok) {
-        // 注册成功后后端直接返回 token，直接进入主页面
-        ElMessage.success('注册成功');
-        router.push('/');
-      }
-      // 失败时错误提示由响应拦截器统一渲染后端 message
+    const session = mode.value === 'login'
+      ? await authStore.login({ ...form })
+      : await authStore.register({ ...form });
+    // store 内已等过 /user/info，角色就位后才能算出该跳哪个端
+    if (session) {
+      ElMessage.success(mode.value === 'login' ? '登录成功' : '注册成功');
+      await router.replace(resolveTarget(session));
     }
+    // 失败时错误提示由响应拦截器统一渲染后端 message
   } finally {
     loading.value = false;
   }
@@ -79,13 +223,16 @@ async function handleSubmit() {
 
 <template>
   <div class="auth-page">
-    <div class="auth-card">
+    <div class="auth-stage">
+      <!-- 登录 / 普通注册卡片：切到管理员注册时上移缩小淡出 -->
+      <div class="auth-slot auth-slot--login" :class="{ 'is-off': view === 'admin' }">
+        <div class="auth-card">
       <!-- 品牌区 -->
       <div class="brand">
         <div class="brand-icon">
           <GraduationCap :size="22" />
         </div>
-        <h1 class="brand-title">作业批阅系统</h1>
+        <h1 class="brand-title">智能教学系统</h1>
         <p class="brand-subtitle">
           {{ mode === 'login' ? '登录以继续使用' : '创建新账户' }}
         </p>
@@ -93,11 +240,9 @@ async function handleSubmit() {
 
       <!-- 模式切换器 -->
       <div class="mode-toggle">
-        <div
-          class="toggle-slider"
-          :class="{ 'toggle-slider--right': mode === 'register' }"
-        ></div>
+        <div ref="sliderRef" class="toggle-slider" aria-hidden="true"></div>
         <button
+          ref="loginTabRef"
           type="button"
           class="toggle-option"
           :class="{ 'toggle-option--active': mode === 'login' }"
@@ -106,6 +251,7 @@ async function handleSubmit() {
           登录
         </button>
         <button
+          ref="registerTabRef"
           type="button"
           class="toggle-option"
           :class="{ 'toggle-option--active': mode === 'register' }"
@@ -153,12 +299,19 @@ async function handleSubmit() {
         {{ loading ? '处理中...' : (mode === 'login' ? '登录' : '注册') }}
       </button>
 
-      <!-- 管理员注册入口：本页不实现管理员注册提交，统一跳转 /admin/register -->
+      <!-- 管理员注册入口：同页切换卡片，不跳转，避免落进运维端布局 -->
       <div class="auth-foot">
-        <button type="button" class="foot-link" @click="gotoAdminRegister">
+        <button type="button" class="foot-link" @click="view = 'admin'">
           <ShieldCheck :size="13" />
           管理员注册（需系统初始化密钥）
         </button>
+      </div>
+        </div>
+      </div>
+
+      <!-- 管理员注册卡片：从右侧滑入，返回登录时反向滑出 -->
+      <div class="auth-slot auth-slot--admin" :class="{ 'is-on': view === 'admin' }">
+        <AdminRegisterCard :active="view === 'admin'" @back="view = 'login'" />
       </div>
     </div>
   </div>
@@ -168,15 +321,65 @@ async function handleSubmit() {
 .auth-page {
   min-height: 100vh;
   display: flex;
-  align-items: center;
   justify-content: center;
   background: var(--bg-canvas);
   padding: 24px;
 }
 
+/* 两张卡片叠在同一个网格单元：切换时高度不跳动，只做位移与淡入淡出 */
+.auth-stage {
+  display: grid;
+  width: 100%;
+  max-width: 420px;
+  margin: auto 0;
+}
+
+.auth-slot {
+  grid-area: 1 / 1;
+  align-self: center;
+  width: 100%;
+}
+
+/* 登录卡：上移 + 轻微缩小 + 淡出 */
+.auth-slot--login {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 0.28s ease 0.06s, transform 0.4s cubic-bezier(0.22, 0.61, 0.36, 1) 0.04s,
+    visibility 0s;
+}
+
+.auth-slot--login.is-off {
+  opacity: 0;
+  transform: translateY(-14px) scale(0.96);
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.24s ease, transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
+    visibility 0s linear 0.34s;
+}
+
+/* 管理员注册卡：默认停在右侧，切到前台时滑入 */
+.auth-slot--admin {
+  opacity: 0;
+  transform: translateX(64px);
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.24s ease, transform 0.34s cubic-bezier(0.22, 0.61, 0.36, 1),
+    visibility 0s linear 0.36s;
+}
+
+.auth-slot--admin.is-on {
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 0.3s ease 0.06s, transform 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) 0.04s,
+    visibility 0s;
+}
+
 .auth-card {
   width: 100%;
-  max-width: 400px;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
@@ -231,7 +434,7 @@ async function handleSubmit() {
   overflow: hidden;
 }
 
-/* 滑动方块主体 */
+/* 指示条：left / width 由 WAAPI 驱动，圆角始终跟随尺寸，不靠 scaleX 拉伸 */
 .toggle-slider {
   position: absolute;
   top: 4px;
@@ -241,12 +444,9 @@ async function handleSubmit() {
   background: var(--text-primary);
   border-radius: calc(var(--radius-md) - 2px);
   box-shadow: 0 1px 3px rgba(28, 25, 23, 0.12);
-  transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: left, width;
+  pointer-events: none;
   z-index: 0;
-}
-
-.toggle-slider--right {
-  transform: translateX(100%);
 }
 
 /* 切换选项 */

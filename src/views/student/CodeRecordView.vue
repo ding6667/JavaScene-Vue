@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 代码运行记录（数据流已接入）
+ * 代码运行记录
  *
- * 已接桩：待实现 @/api/study.fetchCodeRecords        GET /api/study/code/record/list（分页，列表不含代码大字段）
- * 已接桩：待实现 @/api/study.fetchCodeRecordDetail    GET /api/study/code/record/detail?recordId=
- * 已对接：@/api/knowledge.fetchChapters              GET /api/knowledge/chapter/list（章节筛选下拉）
+ * 数据源：
+ * - GET /api/study/code/record/list        分页列表（不含代码大字段）
+ * - GET /api/study/code/record/detail      单条详情（recordId）
+ * - GET /api/knowledge/chapter/list        章节筛选下拉
  *
  * 文档缺口（重要）：后端 openapi 对这两个接口的返回体没有可用描述——
  * 列表项 schema 是空对象、detail 的 data 直接声明成 string，
@@ -77,7 +78,7 @@ type Loose = Record<string, unknown>;
 
 function describeError(apiPath: string, e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  return /未实现/.test(msg) ? `接口待实现：${apiPath}` : `接口调用失败：${apiPath}（${msg}）`;
+  return `接口调用失败：${apiPath}（${msg}）`;
 }
 
 function asLoose(v: unknown): Loose | null {
@@ -333,7 +334,7 @@ onMounted(async () => {
         <Code2 :size="15" class="card-icon" />
         <div>
           <h2 class="st-card__title">运行记录列表</h2>
-          <p class="st-card__hint">已接桩：待实现 @/api/study.fetchCodeRecords · PageResponse&lt;CodeRecordItem&gt;</p>
+          <p class="st-card__hint">GET /api/study/code/record/list · PageResponse&lt;CodeRecordItem&gt;</p>
         </div>
       </div>
       <div class="st-card__body" style="padding-top: 12px;">
@@ -403,7 +404,7 @@ onMounted(async () => {
           <div>
             <h3 class="dialog__title">运行详情 #{{ activeRecordId ?? '—' }}</h3>
             <p class="dialog__sub">
-              已接桩：待实现 @/api/study.fetchCodeRecordDetail · 字段以联调结果为准
+              GET /api/study/code/record/detail?recordId= · 字段以联调结果为准
             </p>
           </div>
           <button class="st-btn st-btn--ghost" @click="detailVisible = false">
@@ -716,7 +717,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  z-index: 1500;
   padding: 24px;
 }
 

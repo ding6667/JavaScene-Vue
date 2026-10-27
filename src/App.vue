@@ -1,13 +1,20 @@
 <template>
-  <div class="app">
-    <PortalSwitcher />
-    <router-view />
-  </div>
+  <el-config-provider :message="messageConfig">
+    <div class="app">
+      <router-view />
+    </div>
+  </el-config-provider>
 </template>
 
 <script setup lang="ts">
-// App.vue - 极简根组件（含全局三端切换滑块，固定右上角）
-import PortalSwitcher from '@/components/PortalSwitcher.vue';
+// App.vue - 极简根组件：只负责挂载路由出口，三端入口由登录后的选端页决定
+import { ElConfigProvider } from 'element-plus';
+
+/**
+ * 全局消息配置：相同文案在展示期内重复触发时合并为一条（带重复次数）。
+ * 并发请求同时失败（例如章节 + 模板同时拉取）只会弹一次，避免同一个网络错误说两遍。
+ */
+const messageConfig = { grouping: true, max: 5 };
 </script>
 
 <style>

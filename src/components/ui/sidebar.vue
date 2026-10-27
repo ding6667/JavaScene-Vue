@@ -4,49 +4,71 @@ import { useRoute, useRouter } from 'vue-router';
 import { cn } from '@/lib/utils';
 import {
   Bot,
+  BookOpen,
   ChevronDown,
+  CircleUser,
+  ClipboardList,
   Database,
   FileClock,
   FileEdit,
   GraduationCap,
   LogOut,
+  MonitorOff,
   Presentation,
   Settings,
   Upload,
+  UserRound,
   Users,
 } from 'lucide-vue-next';
-import { useAuthStore } from '@/stores/auth';
+import { useLogout } from '@/composables/useLogout';
 
 const route = useRoute();
 const router = useRouter();
-const authStore = useAuthStore();
 const isCollapsed = ref(false);
 
 /**
- * 一级菜单分组 + 二级菜单
- * 「作业批阅」分组（grading / upload 模块）与「班级管理」（class 模块）均已下线，
- * 代码归档在根目录 deprecatedmodule/；班级下拉仍由 teach 侧的 fetchTeacherClasses 提供。
+ * 一级菜单按教学流程分三段：学前备课 → 学中管理 → 课后考核。
+ * 「作业批阅」（grading / upload 模块）已下线，代码归档在根目录 deprecatedmodule/。
  */
 const menuGroups = [
   {
-    key: 'teach',
-    label: '智能教学',
-    icon: Bot,
+    key: 'pre',
+    label: '学前备课',
+    icon: BookOpen,
     children: [
       { path: '/teach/prepare', icon: GraduationCap, label: 'AI 智能备课' },
       { path: '/teach/records', icon: FileClock, label: '备课记录' },
-      { path: '/teach/ppt', icon: Presentation, label: 'PPT 模板' },
+      { path: '/teach/ppt', icon: Presentation, label: 'PPT 模板设置' },
+      { path: '/teach/resources', icon: Upload, label: '教学资源上传' },
+    ],
+  },
+  {
+    key: 'in',
+    label: '学中管理',
+    icon: Users,
+    children: [
+      { path: '/teach/learning', icon: Users, label: '班级学情' },
+      { path: '/teach/students', icon: UserRound, label: '学生名单' },
+    ],
+  },
+  {
+    key: 'post',
+    label: '课后考核',
+    icon: ClipboardList,
+    children: [
       { path: '/teach/homework', icon: FileEdit, label: '作业发布' },
       { path: '/teach/questions', icon: Database, label: '题库管理' },
-      { path: '/teach/learning', icon: Users, label: '班级学情' },
       { path: '/teach/intervention', icon: Bot, label: '教学干预' },
-      { path: '/teach/resources', icon: Upload, label: '资源管理' },
     ],
   },
 ];
 
-/** 个人设置为独立项，不归属任何分组 */
-const activeGroupKey = computed(() => (route.path.startsWith('/settings') ? null : 'teach'));
+/** 当前路径归属的分组；账号中心与个人设置是独立项，不属于任何分组 */
+const activeGroupKey = computed(() => {
+  if (route.path.startsWith('/settings') || route.path.startsWith('/account')) return null;
+  const group = menuGroups.find((g) => g.children.some((c) => route.path.startsWith(c.path)));
+  return group?.key ?? 'pre';
+});
 
 /** 展开的分组（默认展开激活组；手动切换后以手动为准） */
 const expanded = ref<Record<string, boolean>>({});
@@ -69,10 +91,8 @@ function navigate(path: string) {
   router.push(path);
 }
 
-function handleLogout() {
-  authStore.logout();
-  router.push('/login');
-}
+// 登出：先让后端吊销 token（Redis 黑名单），失败也照样清本地并回登录页
+const { loggingOut, logout, logoutAllDevices } = useLogout();
 </script>
 
 <template>
@@ -129,8 +149,18 @@ function handleLogout() {
         </ul>
       </div>
 
-      <!-- 独立项：个人设置 -->
+      <!-- 独立项：账号中心 / 个人设置 -->
       <ul class="sub-list" style="margin-top: 4px;">
+        <li>
+          <a
+            href="#"
+            :class="cn('group-link', route.path.startsWith('/account') && 'group-link--active')"
+            @click.prevent="navigate('/account')"
+          >
+            <CircleUser :size="16" class="nav-icon" />
+            <span v-if="!isCollapsed" class="nav-label">账号中心</span>
+          </a>
+        </li>
         <li>
           <a
             href="#"
@@ -144,11 +174,15 @@ function handleLogout() {
       </ul>
     </nav>
 
-    <!-- 底部退出登录 -->
+    <!-- 底部：退出当前设备 / 吊销全部设备会话 -->
     <div class="sidebar__footer">
-      <button class="group-link group-link--logout" @click="handleLogout">
+      <button class="group-link group-link--logout" :disabled="loggingOut" @click="logout">
         <LogOut :size="16" class="nav-icon" />
         <span v-if="!isCollapsed" class="nav-label">退出登录</span>
+      </button>
+      <button class="group-link group-link--logout" :disabled="loggingOut" @click="logoutAllDevices">
+        <MonitorOff :size="16" class="nav-icon" />
+        <span v-if="!isCollapsed" class="nav-label">退出所有设备</span>
       </button>
     </div>
   </aside>
@@ -220,7 +254,7 @@ function handleLogout() {
 }
 
 .menu-group {
-  margin-bottom: 4px;
+  margin-bottom: 10px;
 }
 
 .sub-list {
@@ -327,5 +361,15 @@ function handleLogout() {
 
 .group-link--logout:hover {
   color: var(--status-danger);
+}
+
+.group-link--logout:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  color: var(--text-tertiary);
+}
+
+.group-link--logout + .group-link--logout {
+  margin-top: 2px;
 }
 </style>

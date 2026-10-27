@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 个性化教学干预 —— 已接桩页（数据来自 exam 错题本 + study 章节进度）
+ * 个性化教学干预 —— 数据来自 exam 错题本 + study 章节进度
  *
  * 后端未提供 /api/teach/intervention/*，本页按现有接口能覆盖的范围实现：
  * - 已对接：@/api/exam.fetchWrongQuestions      GET  /api/exam/wrong-question/list
@@ -10,6 +10,7 @@
  * 明确的后端缺口（不用假数据填）：
  * 1) 错题与进度接口都只返回「当前登录用户」的数据，教师取不到全班学生个体记录，
  *    因此下表呈现的是「错题热点排行」而非「薄弱学生名单」；名单需后端补 per-student 接口。
+ *    （GET /api/class/students 只给班级名单的学号/姓名/年级/状态，不含答题明细）
  * 2) 无站内通知/推送接口（答疑服务只有流式问答与历史两个接口，不能用来下发），
  *    所以推送按钮保持禁用，推送记录表恒为空态。
  */
@@ -25,11 +26,8 @@ import {
   Target,
   UserRoundSearch,
 } from 'lucide-vue-next';
-import { fetchWrongQuestions } from '@/api/exam';
-import { fetchProgress } from '@/api/study';
-import { fetchTeacherClasses } from '@/api/teacher';
-import type { TeacherClass } from '@/api/teacher';
-import { DEFAULT_COURSE_ID } from '@/api/knowledge';
+import { fetchClasses } from '@/api/class';
+import type { ClassResponse } from '@/types/class';
 import type { WrongQuestionItem } from '@/types/exam';
 import type { StudyProgress } from '@/types/study';
 
@@ -52,8 +50,8 @@ const filters = reactive({
 const loading = ref(false);
 const wrongList = ref<WrongQuestionItem[]>([]);
 const progressList = ref<StudyProgress[]>([]);
-const classes = ref<TeacherClass[]>([]);
-/** 各自的错误信息：桩未实现时这里是「未实现：GET /api/...」，界面据此提示待接入 */
+const classes = ref<ClassResponse[]>([]);
+/** 错题与进度各自的失败信息，空串表示该次请求成功 */
 const wrongError = ref('');
 const progressError = ref('');
 
@@ -116,25 +114,17 @@ const progressSummary = computed(() => {
   return { chapters: list.length, done, avg };
 });
 
-/** 分别拉取，一个接口失败不影响另一个展示 */
+/**
+ * 本页的两个数据接口 /api/exam/wrong-question/list 与 /api/study/progress/get
+ * 都是 STUDENT 权限（只返回当前登录学生本人数据），教师调用会被后端判为越权 403 并触发强制下线，
+ * 因此这里不发请求，只保留界面与缺口说明。
+ */
 async function load() {
   loading.value = true;
-  wrongError.value = '';
-  progressError.value = '';
-  const [w, p] = await Promise.allSettled([
-    fetchWrongQuestions(),
-    fetchProgress(DEFAULT_COURSE_ID),
-  ]);
-  if (w.status === 'fulfilled') wrongList.value = w.value ?? [];
-  else {
-    wrongList.value = [];
-    wrongError.value = (w.reason as Error).message || '错题接口调用失败';
-  }
-  if (p.status === 'fulfilled') progressList.value = p.value ?? [];
-  else {
-    progressList.value = [];
-    progressError.value = (p.reason as Error).message || '进度接口调用失败';
-  }
+  wrongList.value = [];
+  wrongError.value = '暂不提供全班的错题热点统计';
+  progressList.value = [];
+  progressError.value = '暂不提供全班的章节进度统计';
   loading.value = false;
 }
 
@@ -151,9 +141,9 @@ function openPush(studentName = '') {
 
 onMounted(async () => {
   try {
-    classes.value = await fetchTeacherClasses();
+    classes.value = await fetchClasses();
   } catch {
-    // 班级列表是已对接接口，失败提示由响应拦截器统一处理
+    // 班级列表失败提示由响应拦截器统一处理
   }
   load();
 });
@@ -178,7 +168,7 @@ onMounted(async () => {
             故本页为错题热点排行而非全班名单
           </p>
         </div>
-        <span class="st-badge st-badge--neutral shell-badge">部分待接入</span>
+        <span class="st-badge st-badge--neutral shell-badge">仅单个学生数据</span>
       </div>
       <div class="st-card__body filter-row">
         <div class="filter-item">
@@ -188,9 +178,8 @@ onMounted(async () => {
             placeholder="选择班级"
             style="width: 200px;"
             disabled
-            title="后端错题/进度接口不接受 classId，班级维度名单待补接口"
           >
-            <el-option v-for="c in classes" :key="c.id" :label="c.className" :value="String(c.id)" />
+            <el-option v-for="c in classes" :key="c.classId" :label="c.className" :value="String(c.classId)" />
           </el-select>
         </div>
         <div class="filter-item">
@@ -218,7 +207,7 @@ onMounted(async () => {
             <h2 class="st-card__title">薄弱热点（按错题聚合）</h2>
             <p class="st-card__hint">
               共 {{ weakRows.length }} 条 · 按错误次数降序 ·
-              {{ wrongError ? '错题接口调用失败' : '数据源 /api/exam/wrong-question/list' }}
+              {{ wrongError || '暂无错题热点记录' }}
             </p>
           </div>
         </div>
@@ -238,7 +227,7 @@ onMounted(async () => {
               </thead>
               <tbody>
                 <tr v-for="row in weakRows" :key="row.key">
-                  <td class="cell-name" :title="`题目 #${row.questionId}`">{{ row.stem }}</td>
+                  <td class="cell-name">{{ row.stem }}</td>
                   <td class="cell-secondary">{{ row.typeLabel }}</td>
                   <td>
                     <div class="rate-cell">
@@ -261,7 +250,6 @@ onMounted(async () => {
                         :key="t.key"
                         class="st-text-btn"
                         disabled
-                        :title="`后端未提供推送接口，${t.label} 无法下发`"
                       >
                         推{{ t.label.slice(0, 2) }}
                       </button>
@@ -275,8 +263,8 @@ onMounted(async () => {
                       <div class="st-empty__text">
                         {{ wrongError || '暂无符合条件的错题记录（也可能是筛选项过严）' }}
                       </div>
-                      <div v-if="wrongError" class="st-empty__hint">
-                        接口：@/api/exam.fetchWrongQuestions
+                      <div class="st-empty__hint">
+                        这里只能看到单个学生的错题记录，全班薄弱学生名单待上线
                       </div>
                       <button class="st-btn st-btn--secondary" :disabled="loading" @click="load">
                         <RefreshCw v-if="loading" :size="13" class="spin" />
@@ -293,19 +281,19 @@ onMounted(async () => {
             <button class="st-btn st-btn--secondary" @click="openPush()">
               <Send :size="13" /> 推送干预内容
             </button>
-            <span class="foot-hint">后端未提供站内通知接口，弹窗可填写但不会提交</span>
+            <span class="foot-hint">推送功能暂未开放，弹窗内容可先编辑，暂不会发送</span>
           </div>
         </div>
       </section>
 
-      <!-- 章节完成度概览（来自 study 进度接口） -->
+      <!-- 章节完成度概览 -->
       <section class="st-card">
         <div class="st-card__header">
           <Target :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">章节完成度</h2>
             <p class="st-card__hint">
-              {{ progressError ? '进度接口待实现' : '已接桩：@/api/study.fetchProgress · GET /api/study/progress/get' }}
+              {{ progressError || '暂无章节进度记录' }}
             </p>
           </div>
         </div>
@@ -324,7 +312,7 @@ onMounted(async () => {
             <Target :size="26" :stroke-width="1.2" class="st-empty__icon" />
             <div class="st-empty__text">{{ progressError || '暂无进度数据' }}</div>
             <div v-if="progressError" class="st-empty__hint">
-              该接口只返回当前登录学生自己的进度，全班维度需后端补接口
+              这里只能看到单个学生自己的进度，全班章节完成度待上线
             </div>
           </div>
         </div>
@@ -336,7 +324,7 @@ onMounted(async () => {
           <Send :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">干预推送记录</h2>
-            <p class="st-card__hint">共 0 条 · 后端未提供推送与推送记录接口，本表保持空态</p>
+            <p class="st-card__hint">共 0 条 · 干预推送记录暂未开放</p>
           </div>
         </div>
         <div class="st-card__body">
@@ -373,12 +361,14 @@ onMounted(async () => {
         <div class="st-card push-panel">
           <div class="st-card__header">
             <h2 class="st-card__title">推送干预内容</h2>
-            <span class="st-badge st-badge--neutral shell-badge">UI 骨架</span>
+            <span class="st-badge st-badge--neutral shell-badge">暂未开放</span>
           </div>
           <div class="st-card__body">
             <div class="push-target">
-              推送给：<b>{{ pushTarget || '全部筛选结果（待接口）' }}</b>
-              <span class="st-badge st-badge--neutral" style="margin-left: 6px;">班级待选</span>
+              推送给：<b>{{ pushTarget || '全部筛选结果' }}</b>
+              <span class="st-badge st-badge--neutral" style="margin-left: 6px;">
+                {{ filters.classId ? '已选班级' : '未选班级' }}
+              </span>
             </div>
             <div class="push-types">
               <button
@@ -399,11 +389,11 @@ onMounted(async () => {
             ></textarea>
             <div class="push-note">
               <Target :size="12" />
-              <span>接口预留：确认推送需要后端推送接口，当前按钮保持禁用，填写内容不会提交。</span>
+              <span>推送暂未开放：确认按钮暂不可用，这里填写的内容不会发送给学生。</span>
             </div>
             <div class="push-actions">
               <button class="st-btn st-btn--ghost" @click="dialogVisible = false">取消</button>
-              <button class="st-btn st-btn--primary" disabled title="接口预留：后端未提供干预推送接口">
+              <button class="st-btn st-btn--primary" disabled>
                 <Send :size="13" /> 确认推送
               </button>
             </div>

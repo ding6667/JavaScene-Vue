@@ -10,6 +10,7 @@ import type {
   HomeworkCloseRequest,
   HomeworkDetail,
   HomeworkPublishRequest,
+  PrepareAcceptedResponse,
   PrepareRecordDetail,
   PrepareRecordPage,
   PrepareRecordQuery,
@@ -17,43 +18,23 @@ import type {
   PptTemplateDetail,
   PptTemplateSaveRequest,
   PptTheme,
+  PptThemeDetail,
   PublishedHomework,
   TeachPrepareRequest,
-  TeachPrepareResult,
 } from '@/types/teacher';
-
-// ---------- GET /api/class/records ----------
-
-/**
- * 教师所辖班级（后端 ClassResponse 仅含基础字段）
- * 注意：`/api/class/records` 不在本次给出的 7 份模块文档内（班级管理页已随 class 模块下线），
- * 但作业发布接口的 classId 与班级学情的 classId 都依赖它，联调时需确认该接口是否仍可用。
- */
-export interface TeacherClass {
-  id: number;
-  className: string;
-}
-
-/** 班级列表（分页取全量，后端无"按教师过滤"参数） */
-export async function fetchTeacherClasses(): Promise<TeacherClass[]> {
-  const res = await axiosInstance.get('/api/class/records', {
-    params: { pageNum: 1, pageSize: 100, isAsc: false },
-  });
-  const page = (res.data ?? res) as { records?: { id: number; className: string }[] };
-  return (page.records ?? []).map((c) => ({ id: c.id, className: c.className }));
-}
 
 // ---------- POST /api/agent/teach/prepare（备课，归 teach 模块） ----------
 
 /**
  * 备课材料生成（教案/PPT/重难点/课后习题/上机实训）
- * 开关字段是字符串 '1'/'0'；返回五类材料的 Markdown、PPT 路径与备课记录 ID。
+ * 开关字段是字符串 '1'/'0'；本接口只落一条备课记录并立即返回受理回执
+ * { chapterId, recordId, status: 2 生成中, statusDesc, generateTime }，
+ * 五类材料由后台工作流异步写入，先用 recordId 轮询 GET /api/teach/prepare/record/status，
+ * 状态变 1 再拉 GET /api/teach/prepare/record/detail 取全文。
  */
-export async function generateTeachPrepare(
-  data: TeachPrepareRequest,
-): Promise<TeachPrepareResult> {
+export async function generateTeachPrepare(data: TeachPrepareRequest): Promise<PrepareAcceptedResponse> {
   const res = await axiosInstance.post('/api/agent/teach/prepare', data);
-  return (res.data ?? res) as TeachPrepareResult;
+  return (res.data ?? res) as PrepareAcceptedResponse;
 }
 
 // ---------- POST /api/teach/homework/publish ----------
@@ -96,10 +77,32 @@ export async function fetchHomeworkDetail(homeworkId: number): Promise<HomeworkD
 
 // ---------- PPT 模板与主题 ----------
 
-/** GET /api/teach/ppt/template —— 4 套预置外观主题（后端常量返回，不查库） */
+/** 后端主题 VO 可能用 code / themeCode / theme_code 三种命名，统一成 code */
+type RawThemeFields = {
+  code?: string;
+  themeCode?: string;
+  theme_code?: string;
+};
+
+function normalizeThemeBase<T extends RawThemeFields>(theme: T): T & { code: string } {
+  return { ...theme, code: theme.code || theme.themeCode || theme.theme_code || '' };
+}
+
+/**
+ * GET /api/teach/ppt/template/themes —— 可用主题简要信息（code / name / version）
+ * 列表接口不返回 cssText，避免一次拉回所有主题大字段
+ */
 export async function fetchPptThemes(): Promise<PptTheme[]> {
-  const res = await axiosInstance.get('/api/teach/ppt/template');
-  return (res.data ?? res ?? []) as PptTheme[];
+  const res = await axiosInstance.get('/api/teach/ppt/template/themes');
+  const list = (res.data ?? res ?? []) as (PptTheme & RawThemeFields)[];
+  return list.map((t) => normalizeThemeBase(t));
+}
+
+/** GET /api/teach/ppt/template/themes/{code} —— 单个主题完整信息（含 CSS 全文） */
+export async function fetchPptThemeDetail(code: string): Promise<PptThemeDetail> {
+  const res = await axiosInstance.get(`/api/teach/ppt/template/themes/${encodeURIComponent(code)}`);
+  const detail = (res.data ?? res) as PptThemeDetail & RawThemeFields;
+  return normalizeThemeBase(detail);
 }
 
 /** GET /api/teach/ppt/template/list —— 系统模板 + 本人自定义模板，按 sortOrder 升序 */
@@ -110,7 +113,7 @@ export async function fetchPptTemplates(): Promise<PptTemplate[]> {
 
 /** GET /api/teach/ppt/template/detail/{id} —— 模板详情（含 structure_md 骨架全文） */
 export async function fetchPptTemplateDetail(id: number): Promise<PptTemplateDetail> {
-  const res = await axiosInstance.get(`/api/teach/ppt/template/detail/${id}`);
+  const res = await axiosInstance.get(`/api/teach/ppt/template/detail/${normalizeId(id, '模板')}`);
   return (res.data ?? res) as PptTemplateDetail;
 }
 
@@ -128,9 +131,19 @@ export async function fetchPrepareRecords(params: PrepareRecordQuery): Promise<P
   return (res.data ?? res) as PrepareRecordPage;
 }
 
+/** GET /api/teach/prepare/record/status?id= —— 备课记录状态：2 生成中 / 1 成功 / 0 失败 */
+export async function fetchPrepareRecordStatus(id: number | string): Promise<number> {
+  const res = await axiosInstance.get('/api/teach/prepare/record/status', {
+    params: { id: normalizeId(id, '备课记录') },
+  });
+  return Number((res.data ?? res) as unknown);
+}
+
 /** GET /api/teach/prepare/record/detail?id= —— 五类材料全文 */
-export async function fetchPrepareRecordDetail(id: number): Promise<PrepareRecordDetail> {
-  const res = await axiosInstance.get('/api/teach/prepare/record/detail', { params: { id } });
+export async function fetchPrepareRecordDetail(id: number | string): Promise<PrepareRecordDetail> {
+  const res = await axiosInstance.get('/api/teach/prepare/record/detail', {
+    params: { id: normalizeId(id, '备课记录') },
+  });
   return (res.data ?? res) as PrepareRecordDetail;
 }
 
@@ -138,17 +151,31 @@ export async function fetchPrepareRecordDetail(id: number): Promise<PrepareRecor
  * GET /api/teach/prepare/record/export?recordId= —— 教案导出 Word 文件流（.docx）
  * Blob 响应由拦截器原样返回，调用方负责 createObjectURL 与下载
  */
-export async function exportLessonPlan(recordId: number): Promise<Blob> {
+export async function exportLessonPlan(recordId: number | string): Promise<Blob> {
   return (await axiosInstance.get('/api/teach/prepare/record/export', {
-    params: { recordId },
+    params: { recordId: normalizeId(recordId, '备课记录') },
     responseType: 'blob',
   })) as unknown as Blob;
 }
 
 /** GET /api/teach/ppt/download?recordId= —— 下载本人备课生成的 PPT（成功后后端自增下载计数） */
-export async function downloadPpt(recordId: number): Promise<Blob> {
+export async function downloadPpt(recordId: number | string): Promise<Blob> {
   return (await axiosInstance.get('/api/teach/ppt/download', {
-    params: { recordId },
+    params: { recordId: normalizeId(recordId, '备课记录') },
     responseType: 'blob',
   })) as unknown as Blob;
+}
+
+/**
+ * 记录 / 模板主键校验
+ * 后端这些参数都是 Long，一旦前端把整个响应对象当成 ID 传出去，
+ * String(obj) 会得到 "[object Object]"，Spring 抛类型转换异常，前端只看到「查不到记录」。
+ * 在这里挡住并带上调用方名字，坏数据一出页就能定位。
+ */
+function normalizeId(value: number | string, who: string): string {
+  const id = typeof value === 'number' ? String(value) : String(value ?? '').trim();
+  if (!/^\d+$/.test(id)) {
+    throw new Error(`${who}编号不合法：${id || '(空)'}（调用处传的不是主键值）`);
+  }
+  return id;
 }

@@ -23,7 +23,9 @@ import { fetchChapters } from '@/api/knowledge';
 import { downloadPpt, exportLessonPlan, fetchPrepareRecordDetail, fetchPrepareRecords } from '@/api/teacher';
 import type { Chapter } from '@/types/knowledge';
 import type { PrepareRecordDetail, PrepareRecordItem } from '@/types/teacher';
+import { isBlankDocx, saveBlob, saveHtmlAsWord } from '@/utils/download';
 import { renderMarkdown } from '@/utils/markdown';
+import PrepareMaterialModal from '@/components/teacher/PrepareMaterialModal.vue';
 
 const chapters = ref<Chapter[]>([]);
 const records = ref<PrepareRecordItem[]>([]);
@@ -33,12 +35,18 @@ const pageSize = ref(10);
 const filterChapterId = ref<number | null>(null);
 
 const listLoading = ref(false);
-const exportingId = ref<number | null>(null);
-const downloadingId = ref<number | null>(null);
+const exportingId = ref<number | string | null>(null);
+const downloadingId = ref<number | string | null>(null);
 
 const detailVisible = ref(false);
 const detail = ref<PrepareRecordDetail | null>(null);
 const detailLoading = ref(false);
+/** 点击「详情」时的那一行：材料有无、记录 ID 都以它为准，避免详情返回的 id 与列表不一致时取错行 */
+const detailRecord = ref<PrepareRecordItem | null>(null);
+/** 当前 detail 数据对应的记录 ID，用于避免把上一条记录的内容当成兜底导出素材 */
+const detailForId = ref<number | string | null>(null);
+/** 详情请求序号：连续点开多条记录时只认最后一次响应，防止旧响应覆盖新记录 */
+let detailSeq = 0;
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
 
@@ -84,15 +92,6 @@ function goPage(next: number) {
   loadRecords();
 }
 
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 async function handleExport(row: PrepareRecordItem) {
   if (!row.hasLessonPlan) {
     ElMessage.info('该记录没有教案内容，无法导出');
@@ -101,12 +100,40 @@ async function handleExport(row: PrepareRecordItem) {
   exportingId.value = row.id;
   try {
     const blob = await exportLessonPlan(row.id);
-    saveBlob(blob, `教案_第${row.chapterId}章_${row.id}.docx`);
+    if (!(await isBlankDocx(blob))) {
+      saveBlob(blob, `教案_第${row.chapterId}章_${row.id}.docx`);
+      ElMessage.success('教案已导出');
+      return;
+    }
+    // 后端返回的是空白 Word：改用本次记录已加载的教案全文在本地生成，保证文件有内容
+    const markdown = await resolveLessonPlan(row.id);
+    if (!markdown) {
+      ElMessage.error('导出失败：该记录的教案内容为空');
+      return;
+    }
+    saveHtmlAsWord(
+      renderMarkdown(markdown),
+      `教案 - ${chapterTitle(row.chapterId)}`,
+      `教案_第${row.chapterId}章_${row.id}.doc`,
+    );
     ElMessage.success('教案已导出');
   } catch {
     // 错误已由响应拦截器统一提示
   } finally {
     exportingId.value = null;
+  }
+}
+
+/** 兜底导出用的教案全文：优先复用当前详情，避免重复请求；记录不一致时再按 ID 拉取 */
+async function resolveLessonPlan(recordId: number | string): Promise<string> {
+  if (detailForId.value === recordId && detail.value?.lessonPlan) {
+    return detail.value.lessonPlan.trim();
+  }
+  try {
+    const fetched = await fetchPrepareRecordDetail(recordId);
+    return (fetched.lessonPlan ?? '').trim();
+  } catch {
+    return '';
   }
 }
 
@@ -131,25 +158,36 @@ async function openDetail(row: PrepareRecordItem) {
   detailVisible.value = true;
   detailLoading.value = true;
   detail.value = null;
+  detailForId.value = null;
+  detailRecord.value = row;
+
+  const seq = ++detailSeq;
   try {
-    detail.value = await fetchPrepareRecordDetail(row.id);
+    const data = await fetchPrepareRecordDetail(row.id);
+    if (seq !== detailSeq) return; // 已切换到别的记录，丢弃过期响应
+    detail.value = data;
+    detailForId.value = row.id;
   } catch {
     // 错误已由响应拦截器统一提示
   } finally {
-    detailLoading.value = false;
+    if (seq === detailSeq) detailLoading.value = false;
   }
 }
 
-/** 详情弹窗里的当前行，用于复用列表行的导出 / 下载处理 */
-const detailRow = computed(() => (detail.value ? records.value.find((r) => r.id === detail.value!.id) ?? null : null));
+/** 关闭时作废在途请求，下一次打开会重新拉取 */
+function closeDetail() {
+  detailSeq += 1;
+  detailLoading.value = false;
+  detailVisible.value = false;
+}
 
-const SECTIONS: { key: keyof PrepareRecordDetail; label: string }[] = [
-  { key: 'lessonPlan', label: '章节教案' },
-  { key: 'keyPoints', label: '重难点清单' },
-  { key: 'homework', label: '课后习题' },
-  { key: 'lab', label: '上机实训方案' },
-  { key: 'pptxMd', label: 'PPT 原始内容' },
-];
+function exportDetail() {
+  if (detailRecord.value) handleExport(detailRecord.value);
+}
+
+function downloadDetailPpt() {
+  if (detailRecord.value) handleDownloadPpt(detailRecord.value);
+}
 
 onMounted(async () => {
   try {
@@ -175,7 +213,7 @@ onMounted(async () => {
         <ClipboardList :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">记录列表</h2>
-          <p class="st-card__hint">GET /api/teach/prepare/record/list · 共 {{ total }} 条</p>
+          <p class="st-card__hint">只列出你自己备课成功的记录 · 共 {{ total }} 条</p>
         </div>
         <div class="header-actions">
           <el-select v-model="filterChapterId" placeholder="全部章节" clearable filterable style="width: 200px;">
@@ -198,7 +236,6 @@ onMounted(async () => {
         <table v-else class="rec-table">
           <thead>
             <tr>
-              <th class="col-id">记录 ID</th>
               <th>章节</th>
               <th class="col-time">备课时间</th>
               <th class="col-flags">材料有无</th>
@@ -206,8 +243,7 @@ onMounted(async () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in records" :key="r.id">
-              <td class="cell-mono">{{ r.id }}</td>
+            <tr v-for="r in records" :key="String(r.id)">
               <td class="cell-name">{{ chapterTitle(r.chapterId) }}</td>
               <td class="cell-secondary">{{ fmt(r.createTime) }}</td>
               <td>
@@ -217,7 +253,7 @@ onMounted(async () => {
                   <span :class="['st-badge', r.hasHomework ? 'st-badge--neutral' : 'st-badge--outline']">习题</span>
                   <span :class="['st-badge', r.hasLab ? 'st-badge--neutral' : 'st-badge--outline']">实训</span>
                   <span :class="['st-badge', r.hasPpt ? 'st-badge--dark' : 'st-badge--outline']">
-                    {{ r.hasPpt ? 'PPT 已生成' : '无 PPT' }}
+                    {{ r.hasPpt ? 'PPT 已生成' : '无 PPT 文件' }}
                   </span>
                 </div>
               </td>
@@ -226,7 +262,6 @@ onMounted(async () => {
                 <button
                   class="st-text-btn"
                   :disabled="!r.hasLessonPlan || exportingId === r.id"
-                  title="GET /api/teach/prepare/record/export?recordId="
                   @click="handleExport(r)"
                 >
                   <Loader2 v-if="exportingId === r.id" :size="12" class="spin" />
@@ -236,7 +271,6 @@ onMounted(async () => {
                 <button
                   class="st-text-btn"
                   :disabled="!r.hasPpt || downloadingId === r.id"
-                  title="GET /api/teach/ppt/download?recordId="
                   @click="handleDownloadPpt(r)"
                 >
                   <Loader2 v-if="downloadingId === r.id" :size="12" class="spin" />
@@ -262,64 +296,20 @@ onMounted(async () => {
       </div>
     </section>
 
-    <!-- 详情 -->
-    <div v-if="detailVisible" class="overlay" @click.self="detailVisible = false">
-      <div class="dialog">
-        <header class="dialog__head">
-          <div>
-            <h3 class="dialog__title">
-              备课记录 #{{ detail?.id }}
-              <span v-if="detail" class="dialog__chapter">{{ chapterTitle(detail.chapterId) }}</span>
-            </h3>
-            <p class="dialog__sub">GET /api/teach/prepare/record/detail?id={{ detail?.id }}</p>
-          </div>
-          <div class="dialog__head-ops">
-            <button
-              v-if="detailRow"
-              class="st-btn st-btn--ghost"
-              :disabled="!detailRow.hasLessonPlan"
-              @click="handleExport(detailRow)"
-            >
-              <FileDown :size="13" /> 导出教案
-            </button>
-            <button
-              v-if="detailRow"
-              class="st-btn st-btn--ghost"
-              :disabled="!detailRow.hasPpt"
-              @click="handleDownloadPpt(detailRow)"
-            >
-              <Download :size="13" /> 下载 PPT
-            </button>
-            <button class="st-btn st-btn--secondary" @click="detailVisible = false">关闭</button>
-          </div>
-        </header>
-
-        <div class="dialog__body">
-          <Loader2 v-if="detailLoading" :size="18" class="spin" />
-          <template v-else-if="detail">
-            <p class="detail-meta">
-              备课时间 {{ fmt(detail.createTime) }} ·
-              模板 ID {{ detail.templateId ?? '后端未落库（templateId 当前恒为 null）' }}
-            </p>
-            <a
-              v-if="detail.pptxUrl"
-              class="detail-path"
-              :href="detail.pptxUrl"
-              target="_blank"
-              rel="noopener"
-              title="文件路径直链，下载请走上方的 /api/teach/ppt/download"
-            >
-              PPT 文件路径：{{ detail.pptxUrl }}
-            </a>
-            <section v-for="s in SECTIONS" :key="s.key" class="detail-section">
-              <h4 class="detail-section__title">{{ s.label }}</h4>
-              <div v-if="(detail[s.key] as string)" class="md" v-html="renderMarkdown(detail[s.key] as string)" />
-              <p v-else class="detail-section__empty">该记录未生成此类材料</p>
-            </section>
-          </template>
-        </div>
-      </div>
-    </div>
+    <!-- 详情：多卡片浮层，无整体白色弹窗底板 -->
+    <PrepareMaterialModal
+      :open="detailVisible"
+      :loading="detailLoading"
+      :detail="detail"
+      :chapter-title="detailRecord ? chapterTitle(detailRecord.chapterId) : ''"
+      :time-text="detailRecord ? fmt(detailRecord.createTime) : ''"
+      :row="detailRecord"
+      :exporting="exportingId === detailRecord?.id"
+      :downloading="downloadingId === detailRecord?.id"
+      @close="closeDetail"
+      @export="exportDetail"
+      @download="downloadDetailPpt"
+    />
   </div>
 </template>
 
@@ -369,10 +359,6 @@ onMounted(async () => {
   border-bottom: none;
 }
 
-.col-id {
-  width: 74px;
-}
-
 .col-time {
   width: 140px;
 }
@@ -383,12 +369,6 @@ onMounted(async () => {
 
 .col-ops {
   width: 250px;
-}
-
-.cell-mono {
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12.5px;
-  color: var(--text-secondary);
 }
 
 .cell-name {
@@ -430,184 +410,6 @@ onMounted(async () => {
   gap: 8px;
 }
 
-/* 弹层 */
-.overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(28, 25, 23, 0.32);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 60;
-  padding: 24px;
-}
-
-.dialog {
-  width: min(900px, 100%);
-  max-height: 88vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  overflow: hidden;
-}
-
-.dialog__head {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 18px 22px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.dialog__head > div:first-child {
-  flex: 1;
-  min-width: 0;
-}
-
-.dialog__head-ops {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.dialog__title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.dialog__chapter {
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.dialog__sub {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--text-tertiary);
-  font-family: 'JetBrains Mono', Consolas, monospace;
-}
-
-.dialog__body {
-  padding: 20px 22px;
-  overflow-y: auto;
-}
-
-.detail-meta {
-  margin: 0 0 6px;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-}
-
-.detail-path {
-  display: block;
-  margin: 0 0 14px;
-  font-size: 12px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  color: var(--text-secondary);
-  word-break: break-all;
-}
-
-.detail-path:hover {
-  color: var(--text-primary);
-}
-
-.detail-section {
-  padding: 14px 0;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.detail-section__title {
-  margin: 0 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-}
-
-.detail-section__empty {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-tertiary);
-}
-
-/* Markdown */
-.md {
-  font-size: 13px;
-  line-height: 1.75;
-  color: var(--text-primary);
-  word-break: break-word;
-}
-
-.md :deep(.md-h) {
-  margin: 14px 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
-}
-
-.md :deep(.md-p) {
-  margin: 4px 0;
-}
-
-.md :deep(.md-list) {
-  margin: 4px 0 8px 20px;
-  padding: 0;
-}
-
-.md :deep(.md-list li) {
-  margin: 2px 0;
-}
-
-.md :deep(.md-quote) {
-  margin: 8px 0;
-  padding: 6px 12px;
-  border-left: 2px solid var(--border-strong);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-}
-
-.md :deep(.md-pre) {
-  margin: 8px 0;
-  padding: 12px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  overflow-x: auto;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12.5px;
-}
-
-.md :deep(.md-code) {
-  padding: 1px 5px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12px;
-}
-
-.md :deep(.md-hr) {
-  margin: 12px 0;
-  border: none;
-  border-top: 1px solid var(--border-default);
-}
-
-.md :deep(.md-link) {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-
 .spin {
   animation: spin 0.9s linear infinite;
 }
@@ -625,10 +427,6 @@ onMounted(async () => {
 
   .header-actions {
     flex-wrap: wrap;
-  }
-
-  .dialog__head {
-    flex-direction: column;
   }
 }
 </style>

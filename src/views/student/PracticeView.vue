@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 分层刷题练习（数据流已接入，接口为桩时保留空态并指明位置）
+ * 分层刷题练习
  *
  * 已对接：@/api/exam.fetchPracticeList            GET  /api/exam/question/practice/list
  * 已对接：@/api/exam.fetchPracticeDetail          GET  /api/exam/question/practice/detail/{id}

@@ -444,7 +444,7 @@ function buildPayload(): QuestionSaveRequest {
 async function handleSave() {
   if (saving.value) return;
   if (!form.content.trim()) {
-    ElMessage.warning('题干（content）不能为空');
+    ElMessage.warning('题干不能为空');
     return;
   }
   if (!form.answer.trim()) {
@@ -456,7 +456,7 @@ async function handleSave() {
     return;
   }
   if (drawerMode.value === 'edit' && form.id == null) {
-    ElMessage.error('缺少题目 ID，update 接口必须带 id，请重新从列表进入编辑');
+    ElMessage.error('这道题缺少编号，无法保存修改，请重新从列表进入编辑');
     return;
   }
 
@@ -464,7 +464,7 @@ async function handleSave() {
   try {
     testCases = buildTestCases(form.testCases);
   } catch {
-    ElMessage.error('测试用例不是合法 JSON，未提交。请填写 JudgeTestCase[] 结构的 JSON 数组');
+    ElMessage.error('测试用例格式不正确，本次没有保存。请按示例填写用例列表');
     return;
   }
 
@@ -475,7 +475,7 @@ async function handleSave() {
   try {
     if (drawerMode.value === 'create') {
       const id = await createQuestion(payload);
-      ElMessage.success(id ? `题目已新增（ID ${id}）` : '题目已新增');
+      ElMessage.success(id ? `题目已新增（编号 ${id}）` : '题目已新增');
     } else {
       const msg = await updateQuestion(payload);
       ElMessage.success(msg || '题目已更新');
@@ -498,7 +498,7 @@ async function handleDelete(row: QuestionAdminItem) {
   if (deletingId.value != null) return;
   try {
     await ElMessageBox.confirm(
-      `删除题目 #${row.id}（后端为逻辑删除），题干：${String(row.content ?? '').slice(0, 30)}…确认删除？`,
+      `删除题目（编号 ${row.id}），题干：${String(row.content ?? '').slice(0, 30)}…删除后这道题不再出现在题库里，确认删除？`,
       '删除题目',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     );
@@ -539,7 +539,7 @@ function openRandom() {
 async function runRandom() {
   if (randomLoading.value) return;
   if (randomForm.chapterId == null) {
-    ElMessage.warning('随机抽题必须指定章节（RandomQuestionRequest.chapterId 必填）');
+    ElMessage.warning('随机抽题前请先选择章节');
     return;
   }
   randomLoading.value = true;
@@ -597,7 +597,7 @@ async function runGenerate() {
       userInstruction: aiForm.userInstruction.trim() || undefined,
     });
     aiBatch.value = batch;
-    ElMessage.success(`出题任务已提交（批次 ${batch}），题目异步入库，稍后刷新列表查看`);
+    ElMessage.success(`出题任务已提交（批次 ${batch}），题目稍后会自动出现在列表里，请稍候刷新查看`);
     aiVisible.value = false;
     // 生成接口不回题目内容，只能回读列表接口
     await loadList();
@@ -697,7 +697,6 @@ onMounted(() => {
           <button
             class="st-btn st-btn--secondary"
             :disabled="aiLoading"
-            title="已对接 @/api/exam.generateQuestions：只返回批次号，题目由后端异步入库"
             @click="openAi"
           >
             <Sparkles :size="13" /> AI 出题
@@ -715,9 +714,6 @@ onMounted(() => {
         <ClipboardList :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">题目列表</h2>
-          <p class="st-card__hint">
-            数据源：@/api/exam.fetchQuestionAdminList 的 records（{ records, total, current, size }）
-          </p>
         </div>
         <Loader2 v-if="listLoading" :size="15" class="spin header-spin" />
       </div>
@@ -750,7 +746,7 @@ onMounted(() => {
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>ID</th>
+                  <th>编号</th>
                   <th>题干</th>
                   <th>题型</th>
                   <th>难度</th>
@@ -837,26 +833,26 @@ onMounted(() => {
               </p>
 
               <p v-if="drawerLoading" class="drawer-loading">
-                <Loader2 :size="13" class="spin" /> 正在拉取题目详情（@/api/exam.fetchQuestionAdminDetail）…
+                <Loader2 :size="13" class="spin" /> 正在读取这道题的完整信息…
               </p>
               <p v-if="drawerError" class="inline-error">
                 <AlertTriangle :size="12" /> {{ drawerError }}
               </p>
 
               <div class="form-item">
-                <label class="form-label">题干（content，必填）</label>
+                <label class="form-label">题干（必填）</label>
                 <textarea v-model="form.content" class="form-textarea" rows="3" placeholder="题干正文"></textarea>
               </div>
 
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
-                  <label class="form-label">题型（type，码值）</label>
+                  <label class="form-label">题型</label>
                   <el-select v-model="form.type" style="width: 100%;">
                     <el-option v-for="t in QUESTION_TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
                   </el-select>
                 </div>
                 <div class="form-item" style="flex: 1;">
-                  <label class="form-label">难度（difficulty，码值）</label>
+                  <label class="form-label">难度</label>
                   <el-select v-model="form.difficulty" style="width: 100%;">
                     <el-option v-for="d in DIFFICULTY_OPTIONS" :key="d.value" :label="d.label" :value="d.value" />
                   </el-select>
@@ -865,30 +861,30 @@ onMounted(() => {
 
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
-                  <label class="form-label">章节（chapterId）</label>
+                  <label class="form-label">章节</label>
                   <el-select v-model="form.chapterId" placeholder="选择章节" clearable filterable style="width: 100%;">
                     <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
                   </el-select>
                 </div>
                 <div class="form-item" style="width: 110px;">
-                  <label class="form-label">分值（score）</label>
+                  <label class="form-label">分值</label>
                   <el-input-number v-model="form.score" :min="0" :max="100" style="width: 100%;" />
                 </div>
                 <div class="form-item" style="width: 110px;">
-                  <label class="form-label">权重（weight）</label>
+                  <label class="form-label">权重</label>
                   <el-input-number v-model="form.weight" :min="0" :step="0.1" style="width: 100%;" />
                 </div>
               </div>
 
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
-                  <label class="form-label">认知层级（cognitiveLevel）</label>
+                  <label class="form-label">认知层级</label>
                   <el-select v-model="form.cognitiveLevel" style="width: 100%;">
                     <el-option v-for="c in COGNITIVE_OPTIONS" :key="c" :label="c" :value="c" />
                   </el-select>
                 </div>
                 <div class="form-item" style="flex: 1;">
-                  <label class="form-label">判题方式（judgeMode）</label>
+                  <label class="form-label">判题方式</label>
                   <el-select v-model="form.judgeMode" style="width: 100%;">
                     <el-option v-for="j in JUDGE_MODE_OPTIONS" :key="j.value" :label="j.label" :value="j.value" />
                   </el-select>
@@ -911,17 +907,17 @@ onMounted(() => {
               </div>
 
               <div class="form-item">
-                <label class="form-label">解析（analysis，学生端可见）</label>
+                <label class="form-label">解析（学生端可见）</label>
                 <textarea v-model="form.analysis" class="form-textarea" rows="2" placeholder="答案解析"></textarea>
               </div>
 
               <template v-if="isProgramming">
                 <div class="form-item">
-                  <label class="form-label">作答要求（requirements，一行一条）</label>
+                  <label class="form-label">作答要求（一行一条）</label>
                   <textarea v-model="form.requirements" class="form-textarea" rows="2" placeholder="功能与规范要求"></textarea>
                 </div>
                 <div class="form-item">
-                  <label class="form-label">代码框架（codeFramework）</label>
+                  <label class="form-label">代码框架（给学生的初始代码）</label>
                   <textarea
                     v-model="form.codeFramework"
                     class="form-textarea code-textarea"
@@ -930,30 +926,30 @@ onMounted(() => {
                   ></textarea>
                 </div>
                 <div class="form-item">
-                  <label class="form-label">提示（hints，一行一条）</label>
+                  <label class="form-label">提示（一行一条）</label>
                   <textarea v-model="form.hints" class="form-textarea" rows="2" placeholder="分步提示"></textarea>
                 </div>
                 <div class="form-item">
-                  <label class="form-label">解题思路（solutionOutline）</label>
+                  <label class="form-label">解题思路</label>
                   <textarea v-model="form.solutionOutline" class="form-textarea" rows="2" placeholder="参考思路提纲"></textarea>
                 </div>
                 <div class="form-item">
-                  <label class="form-label">测试用例（testCases，JudgeTestCase[] 的 JSON）</label>
+                  <label class="form-label">测试用例（按示例格式填写）</label>
                   <textarea
                     v-model="form.testCases"
                     class="form-textarea code-textarea"
                     rows="7"
-                    placeholder='[{"caseIndex":1,"input":"3 5","expectedOutput":"8","isSample":true,"caseType":"normal","weight":1,"timeLimit":1000,"memoryLimit":256,"description":"示例用例"}]'
+                    placeholder='[{"input":"3 5","expectedOutput":"8","description":"示例用例"}]'
                   ></textarea>
                   <p class="field-hint">
-                    缺失字段按默认值补齐（caseType=normal、weight=1、timeLimit=1000、memoryLimit=256）；
-                    JSON 非法时拦截提交并提示，不会静默丢用例。
+                    没填的项会自动按默认值补齐（普通用例、权重 1、限时 1000 毫秒、限内存 256 MB）；
+                    格式有误时会提示并暂停保存，不会漏掉用例。
                   </p>
                 </div>
               </template>
 
               <div class="form-item">
-                <label class="form-label">关联知识点（knowledgePointIds，逗号分隔）</label>
+                <label class="form-label">关联知识点（多个编号用逗号分隔）</label>
                 <input v-model="form.knowledgePointIds" class="form-input" placeholder="如：12,15,23" />
               </div>
             </div>
@@ -991,7 +987,7 @@ onMounted(() => {
         <div class="dialog__body">
           <div class="form-row">
             <div class="form-item" style="flex: 1;">
-              <label class="form-label">章节（chapterId，必填）</label>
+              <label class="form-label">章节（必选）</label>
               <el-select v-model="randomForm.chapterId" placeholder="选择章节" filterable style="width: 100%;">
                 <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
               </el-select>
@@ -1037,7 +1033,7 @@ onMounted(() => {
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>ID</th>
+                  <th>编号</th>
                   <th>题干</th>
                   <th>题型</th>
                   <th>难度</th>
@@ -1058,7 +1054,7 @@ onMounted(() => {
             <p class="json-note">
               合计 {{ randomResult.length }} 题 · 总分
               {{ randomResult.reduce((sum, q) => sum + (Number(q.score) || 0), 0) }}。
-              后端未提供「保存为试卷/布置作业」的抽题落库接口，此处只列出结果，布置作业请到作业发布页。
+              抽题结果暂时不能直接存成试卷；需要布置作业时，请到作业发布页新建作业。
             </p>
           </template>
         </div>
@@ -1071,35 +1067,35 @@ onMounted(() => {
         <header class="dialog__head">
           <div>
             <h3 class="dialog__title">AI 出题</h3>
-            <p class="dialog__sub">已对接 @/api/exam.generateQuestions · POST /api/exam/question/generate</p>
+            <p class="dialog__sub">让系统按章节和题型自动出题，出题结果会进入题库</p>
           </div>
           <button class="st-btn st-btn--ghost" @click="aiVisible = false">关闭</button>
         </header>
         <div class="dialog__body">
           <p class="drawer-hint">
-            后端异步出题并直接落库，接口只返回批次号，不返回题目内容；提交成功后本页会自动重查列表，
-            题目入库有延迟，稍后再刷新即可看到。
+            系统会自动出题并保存到题库，这里只显示任务批次号，不直接返回题目内容；
+            提交成功后本页会自动刷新，新题目需要一点时间才会出现，稍后再刷新即可看到。
           </p>
           <div class="form-row">
             <div class="form-item" style="flex: 1;">
-              <label class="form-label">章节（chapterId，可选）</label>
+              <label class="form-label">章节（可选）</label>
               <el-select v-model="aiForm.chapterId" placeholder="不限章节" clearable filterable style="width: 100%;">
                 <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
               </el-select>
             </div>
             <div class="form-item" style="width: 150px;">
-              <label class="form-label">题型（'all' 或码值）</label>
+              <label class="form-label">题型</label>
               <el-select v-model="aiForm.questionType" style="width: 100%;">
                 <el-option v-for="t in AI_TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
               </el-select>
             </div>
             <div class="form-item" style="width: 120px;">
-              <label class="form-label">数量（count）</label>
+              <label class="form-label">数量</label>
               <el-input-number v-model="aiForm.count" :min="1" :max="20" style="width: 100%;" />
             </div>
           </div>
           <div class="form-item">
-            <label class="form-label">附加指令（userInstruction，可选）</label>
+            <label class="form-label">附加要求（可选）</label>
             <textarea
               v-model="aiForm.userInstruction"
               class="form-textarea"
@@ -1108,8 +1104,8 @@ onMounted(() => {
             ></textarea>
           </div>
           <p class="field-hint">
-            difficultyConfigId 未提供配置列表接口（@/types/exam 要求关联 exam_question_difficulty_config.id），
-            本页不提交该字段。
+            难度配置项目前还没有可选列表，
+            这里不设置难度配置，题目按上面选的难度生成。
           </p>
           <p v-if="aiError" class="inline-error">
             <AlertTriangle :size="12" /> {{ aiError }}

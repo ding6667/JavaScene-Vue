@@ -20,8 +20,8 @@ app.use(pinia);
 app.use(router);
 app.use(ElementPlus);
 
-// 启动即校验会话：已接桩（待实现 @/api/user.fetchUserInfo），桩抛错时保留本地 token，
-// 真实失效才清 token，交给路由守卫回登录页；不 await，避免首屏被未实现接口阻塞。
+// 启动即校验会话：失败只记录状态、不清 token（真失效由后端 401 触发拦截器登出）；
+// 不 await，避免首屏被 /user/info 阻塞。
 void useAuthStore(pinia).restoreSession();
 
 app.mount('#app');

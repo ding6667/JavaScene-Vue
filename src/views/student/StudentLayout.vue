@@ -6,15 +6,20 @@ import {
   BarChart3,
   BookOpen,
   CircleAlert,
+  CircleUser,
   ClipboardList,
   Code2,
   GraduationCap,
   History,
   Home,
   ListChecks,
+  LogOut,
   MessageCircleQuestion,
+  MonitorOff,
 } from 'lucide-vue-next';
+import ChatWidget from '@/components/chat/ChatWidget.vue';
 import { useAuthStore } from '@/stores/auth';
+import { useLogout } from '@/composables/useLogout';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -30,6 +35,7 @@ const navItems = [
   { path: '/student/homework', icon: ClipboardList, label: '我的作业' },
   { path: '/student/wrong', icon: CircleAlert, label: '错题本' },
   { path: '/student/report', icon: BarChart3, label: '学习报告' },
+  { path: '/student/account', icon: CircleUser, label: '账号中心' },
 ];
 
 function isActive(item: typeof navItems[0]): boolean {
@@ -38,6 +44,9 @@ function isActive(item: typeof navItems[0]): boolean {
   }
   return route.path.startsWith(item.path);
 }
+
+// 登出：先让后端吊销 token（Redis 黑名单），失败也照样清本地并回登录页
+const { loggingOut, logout, logoutAllDevices } = useLogout();
 </script>
 
 <template>
@@ -74,21 +83,31 @@ function isActive(item: typeof navItems[0]): boolean {
         </ul>
       </nav>
 
-      <!-- 底部：当前登录学生 -->
+      <!-- 底部：当前登录学生 + 退出当前设备 / 吊销全部设备 -->
       <div class="student-sidebar__footer">
         <div class="student-user">
-          <div class="student-user__avatar">{{ (authStore.username ?? '学').slice(0, 1) }}</div>
+          <div class="student-user__avatar">{{ authStore.displayName.slice(0, 1) }}</div>
           <div v-if="!isCollapsed" class="student-user__meta">
-            <div class="student-user__name">{{ authStore.username ?? '未登录' }}</div>
+            <div class="student-user__name">{{ authStore.displayName }}</div>
             <div class="student-user__class">学生端</div>
           </div>
         </div>
+        <button type="button" class="student-logout" :disabled="loggingOut" @click="logout">
+          <LogOut :size="16" class="nav-icon" />
+          <span v-if="!isCollapsed" class="nav-label">退出登录</span>
+        </button>
+        <button type="button" class="student-logout" :disabled="loggingOut" @click="logoutAllDevices">
+          <MonitorOff :size="16" class="nav-icon" />
+          <span v-if="!isCollapsed" class="nav-label">退出所有设备</span>
+        </button>
       </div>
     </aside>
 
     <main class="student-main">
       <router-view />
     </main>
+
+    <ChatWidget />
   </div>
 </template>
 
@@ -248,6 +267,35 @@ function isActive(item: typeof navItems[0]): boolean {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 退出登录：与教师端 sidebar 同款，hover 转 --status-danger */
+.student-logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.student-logout:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--status-danger);
+}
+
+.student-logout:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .student-main {

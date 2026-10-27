@@ -1,6 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 
+/**
+ * 路由表：roles 只写在父路由上，子路由通过 Vue Router 的 meta 合并继承。
+ * 子路由若确实需要覆盖（如管理员注册页对所有人开放），显式写 roles: [] 即可。
+ */
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
@@ -8,15 +12,35 @@ const router = createRouter({
       path: '/login',
       name: 'Login',
       component: () => import('@/views/LoginView.vue'),
-      meta: { public: true },
+      meta: { public: true, title: '登录' },
+    },
+    {
+      // 管理员注册是公开页：独立于运维端布局，未登录访问时不会带出内部导航
+      path: '/admin/register',
+      name: 'AdminRegister',
+      component: () => import('@/views/admin/AdminRegisterView.vue'),
+      meta: { public: true, title: '管理员注册' },
+    },
+    {
+      // 一个账号挂了多个角色时，登录后先在这里选进哪个端
+      path: '/choose-portal',
+      name: 'ChoosePortal',
+      component: () => import('@/views/PortalSelectView.vue'),
+      meta: { title: '选择进入的端口' },
+    },
+    {
+      path: '/403',
+      name: 'Forbidden',
+      component: () => import('@/views/error/ForbiddenView.vue'),
+      meta: { public: true, title: '无权限' },
     },
     {
       path: '/',
       component: () => import('@/views/LayoutView.vue'),
+      meta: { roles: ['TEACHER'], portal: 'teacher' },
       children: [
         {
           path: '',
-          // 作业批阅模块已下线，教师端默认落地页改为智能备课
           redirect: '/teach/prepare',
         },
         // ==================== 智能教学（教师端新功能） ====================
@@ -61,18 +85,33 @@ const router = createRouter({
           component: () => import('@/views/teacher/QuestionBankView.vue'),
         },
         {
+          // 名册接口是 TEACHER/ADMIN 权限，与运维端复用同一个视图
+          path: 'teach/students',
+          name: 'TeachStudents',
+          component: () => import('@/views/common/StudentRosterView.vue'),
+        },
+        {
+          path: 'account',
+          name: 'Account',
+          component: () => import('@/views/AccountView.vue'),
+        },
+        {
           path: 'settings',
           name: 'Settings',
           component: () => import('@/views/SettingsView.vue'),
         },
       ],
     },
-    // ==================== 学生端（独立前缀 /student，阶段内免登录） ====================
+    // ==================== 学生端 ====================
     {
       path: '/student',
       component: () => import('@/views/student/StudentLayout.vue'),
-      meta: { public: true, portal: 'student' },
+      meta: { roles: ['STUDENT'], portal: 'student' },
       children: [
+        {
+          path: '',
+          redirect: '/student/dashboard',
+        },
         {
           path: 'dashboard',
           name: 'StudentDashboard',
@@ -130,14 +169,23 @@ const router = createRouter({
           name: 'StudentReport',
           component: () => import('@/views/student/ReportView.vue'),
         },
+        {
+          path: 'account',
+          name: 'StudentAccount',
+          component: () => import('@/views/AccountView.vue'),
+        },
       ],
     },
-    // ==================== 运维端（独立前缀 /admin，免登录调试） ====================
+    // ==================== 运维端 ====================
     {
       path: '/admin',
       component: () => import('@/views/admin/AdminLayout.vue'),
-      meta: { public: true, portal: 'admin' },
+      meta: { roles: ['ADMIN'], portal: 'admin' },
       children: [
+        {
+          path: '',
+          redirect: '/admin/dashboard',
+        },
         {
           path: 'dashboard',
           name: 'AdminDashboard',
@@ -147,6 +195,16 @@ const router = createRouter({
           path: 'users',
           name: 'AdminUsers',
           component: () => import('@/views/admin/UserManageView.vue'),
+        },
+        {
+          path: 'classes',
+          name: 'AdminClasses',
+          component: () => import('@/views/admin/ClassManageView.vue'),
+        },
+        {
+          path: 'students',
+          name: 'AdminStudents',
+          component: () => import('@/views/common/StudentRosterView.vue'),
         },
         {
           path: 'knowledge',
@@ -162,12 +220,6 @@ const router = createRouter({
           path: 'dataset',
           name: 'AdminDatasetUpload',
           component: () => import('@/views/admin/DatasetUploadView.vue'),
-        },
-        {
-          path: 'register',
-          name: 'AdminRegister',
-          component: () => import('@/views/admin/AdminRegisterView.vue'),
-          meta: { public: true },
         },
         {
           path: 'logs',
@@ -186,19 +238,48 @@ const router = createRouter({
         },
       ],
     },
+    // 未知路径统一并入 403，不给探测路由留口子
+    { path: '/:pathMatch(.*)*', redirect: '/403' },
   ],
 });
 
-// 路由守卫：未登录时跳转到登录页
+/**
+ * 全局守卫：公开页放行 → 未登录/过期回登录 → 角色不足跳 403（不惩罚，保留登录态）
+ */
 router.beforeEach((to) => {
-  const authStore = useAuthStore();
-  if (!to.meta.public && !authStore.isAuthenticated) {
-    return { name: 'Login', query: { redirect: to.fullPath } };
+  const auth = useAuthStore();
+
+  if (to.meta.public) {
+    // 已登录还去登录页：直接送回该去的地方，多角色则进选端页
+    if (to.path === '/login' && auth.isAuthenticated) {
+      return auth.hasMultipleRoles ? { name: 'ChoosePortal' } : auth.resolveHome();
+    }
+    return true;
   }
-  if (to.name === 'Login' && authStore.isAuthenticated) {
-    return { name: 'Home' };
+
+  if (!auth.isAuthenticated) {
+    // 只清本地：token 已过期，后端本来就当它不存在，没有可拉黑的东西
+    auth.clearAuth();
+    return { path: '/login', query: { redirect: to.fullPath } };
   }
+
+  // 单角色账号不需要选端，直接回自己的首页；解不出角色时留在选端页兜底
+  if (to.name === 'ChoosePortal' && auth.roles.length === 1) {
+    return auth.resolveHome();
+  }
+
+  const required = (to.meta.roles as string[] | undefined) ?? [];
+  // 角色集合为空时（JWT 无声明且档案接口未实现）不在前端下结论，交给后端 401/403 判定
+  if (required.length && auth.roles.length && !required.some((r) => auth.roles.includes(r as never))) {
+    return { path: '/403', query: { from: to.fullPath } };
+  }
+
   return true;
+});
+
+router.afterEach((to) => {
+  const title = to.meta.title as string | undefined;
+  document.title = title ? `${title} - 智能教学系统` : '智能教学系统';
 });
 
 export default router;

@@ -4,29 +4,41 @@ import { useRoute } from 'vue-router';
 import { cn } from '@/lib/utils';
 import {
   Activity,
+  CircleUser,
   CloudUpload,
   DatabaseBackup,
   BookOpen,
   KeyRound,
   LayoutDashboard,
+  LogOut,
+  MonitorOff,
   ServerCog,
   ScrollText,
   ShieldCheck,
   SlidersHorizontal,
+  UserRound,
+  Users,
 } from 'lucide-vue-next';
+import ChatWidget from '@/components/chat/ChatWidget.vue';
+import { useAuthStore } from '@/stores/auth';
+import { useLogout } from '@/composables/useLogout';
 
 const route = useRoute();
+const authStore = useAuthStore();
 const isCollapsed = ref(true);
 
 const navItems = [
   { path: '/admin/dashboard', icon: LayoutDashboard, label: '运维仪表盘', exact: true },
   { path: '/admin/users', icon: KeyRound, label: '用户管理' },
+  { path: '/admin/classes', icon: Users, label: '班级管理' },
+  { path: '/admin/students', icon: UserRound, label: '学生名单' },
   { path: '/admin/knowledge', icon: BookOpen, label: '知识库维护' },
   { path: '/admin/weights', icon: SlidersHorizontal, label: '权重配置' },
   { path: '/admin/dataset', icon: CloudUpload, label: '知识库上传' },
   { path: '/admin/logs', icon: ScrollText, label: '日志审计' },
   { path: '/admin/backup', icon: DatabaseBackup, label: '数据备份' },
   { path: '/admin/settings', icon: ServerCog, label: '系统参数' },
+  { path: '/admin/account', icon: CircleUser, label: '账号中心' },
   { path: '/admin/register', icon: ShieldCheck, label: '管理员注册' },
 ];
 
@@ -34,6 +46,9 @@ function isActive(item: typeof navItems[0]): boolean {
   if (item.exact) return route.path === item.path;
   return route.path.startsWith(item.path);
 }
+
+// 登出：先让后端吊销 token（Redis 黑名单），失败也照样清本地并回登录页
+const { loggingOut, logout, logoutAllDevices } = useLogout();
 </script>
 
 <template>
@@ -70,18 +85,28 @@ function isActive(item: typeof navItems[0]): boolean {
 
       <div class="admin-sidebar__footer">
         <div class="admin-user">
-          <div class="admin-user__avatar">A</div>
+          <div class="admin-user__avatar">{{ authStore.displayName.slice(0, 1) }}</div>
           <div v-if="!isCollapsed" class="admin-user__meta">
-            <div class="admin-user__name">系统管理员</div>
-            <div class="admin-user__org">信息中心</div>
+            <div class="admin-user__name">{{ authStore.displayName }}</div>
+            <div class="admin-user__org">{{ authStore.roleLabel }}</div>
           </div>
         </div>
+        <button type="button" class="admin-logout" :disabled="loggingOut" @click="logout">
+          <LogOut :size="16" class="admin-logout__icon" />
+          <span v-if="!isCollapsed" class="admin-logout__label">退出登录</span>
+        </button>
+        <button type="button" class="admin-logout" :disabled="loggingOut" @click="logoutAllDevices">
+          <MonitorOff :size="16" class="admin-logout__icon" />
+          <span v-if="!isCollapsed" class="admin-logout__label">退出所有设备</span>
+        </button>
       </div>
     </aside>
 
     <main class="admin-main">
       <router-view />
     </main>
+
+    <ChatWidget />
   </div>
 </template>
 
@@ -215,16 +240,62 @@ function isActive(item: typeof navItems[0]): boolean {
   flex-shrink: 0;
 }
 
+.admin-user__meta {
+  min-width: 0;
+}
+
 .admin-user__name {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .admin-user__org {
   font-size: 11px;
   color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 退出登录：与教师端 sidebar 同款，hover 转 --status-danger */
+.admin-logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.admin-logout:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--status-danger);
+}
+
+.admin-logout:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.admin-logout__icon {
+  flex-shrink: 0;
+}
+
+.admin-logout__label {
+  font-size: 13.5px;
   white-space: nowrap;
 }
 

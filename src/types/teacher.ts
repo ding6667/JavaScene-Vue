@@ -8,6 +8,7 @@
 /**
  * POST /api/agent/teach/prepare 请求体
  * 生成开关后端声明为字符串：'1'=开启，'0'=关闭，缺省按开启处理。
+ * 三组 config 与后端 DTO 一致，字段全为 String，未传的字段由备课工作流兜底默认值。
  */
 export interface TeachPrepareRequest {
   chapterId: number;
@@ -21,22 +22,69 @@ export interface TeachPrepareRequest {
   lab?: string;
   /** 是否提炼重难点 */
   keyPoints?: string;
-  /** 用户额外指令 */
+  /** 用户其他要求 */
   userMessage?: string;
+  /** PPT 模板 ID，为空时使用系统默认模板 */
+  templateId?: number;
+  /** PPT 生成配置 */
+  pptConfig?: PptGenerateConfig;
+  /** 教案生成配置 */
+  lessonPlanConfig?: LessonPlanGenerateConfig;
+  /** 课后习题配置（题库题目由后端拉取，前端不传） */
+  homeworkConfig?: HomeworkGenerateConfig;
 }
 
-/** 备课材料生成结果（Markdown 文本 + PPT 路径 + 备课记录 ID） */
-export interface TeachPrepareResult {
+/**
+ * POST /api/agent/teach/prepare 受理回执
+ * 后端受理后立即返回，不等待材料生成：status 恒为 2（生成中），
+ * 五类材料由后台工作流异步写进同一条备课记录，用 recordId 轮询状态接口，状态转 1 后再取详情。
+ */
+export interface PrepareAcceptedResponse {
   chapterId: number;
-  lessonPlan: string;
-  /** PPT 文件路径，转换失败或未开启时为 null */
-  pptxUrl: string | null;
-  keyPoints: string;
-  homework: string;
-  lab: string;
-  /** 备课记录 ID，落库后回填，供查询追溯 */
-  recordId: number;
+  /** 备课记录编号；Long 可能超出 Number 安全整数，使用时统一转字符串 */
+  recordId: number | string;
+  /** 2=生成中（受理回执恒为该值） */
+  status: number;
+  /** 状态中文描述，如「生成中」 */
+  statusDesc: string;
+  /** 失败原因，受理回执为空 */
+  errorMsg?: string | null;
+  /** 受理时间 */
   generateTime: string;
+}
+
+/** PPT 生成配置：字段全 String，与智能体 api 契约一致 */
+export interface PptGenerateConfig {
+  /** 页数范围，如 "10-14" */
+  pageRange?: string;
+  /** 是否包含目录页：1=是 0=否 */
+  includeOutline?: string;
+  /** 是否包含总结页：1=是 0=否 */
+  includeSummary?: string;
+  /** 每页代码块上限 */
+  codeBlockMax?: string;
+}
+
+/** 教案生成配置 */
+export interface LessonPlanGenerateConfig {
+  /** 课型：new=新授课，review=复习课 */
+  courseType?: string;
+  /** 课时分钟数，如 "45" */
+  duration?: string;
+  /** 详细度：brief=简案，medium=标准，detailed=详案 */
+  detailLevel?: string;
+  /** 是否包含板书设计：1=是 0=否 */
+  includeBoardDesign?: string;
+  /** 是否包含课堂练习环节：1=是 0=否 */
+  includeExercise?: string;
+}
+
+/** 课后习题配置 */
+export interface HomeworkGenerateConfig {
+  /** 题目数量，如 "5" */
+  questionCount?: string;
+  /** 难度分布（易,中,难），如 "2,2,1" */
+  difficultyDistribution?: string;
 }
 
 // ==================== 作业 ====================
@@ -138,12 +186,24 @@ export interface HomeworkDetail {
 
 // ==================== PPT 模板与主题 ====================
 
-/** GET /api/teach/ppt/template 返回项：预置外观主题（常量，4 套） */
+/**
+ * GET /api/teach/ppt/themes 返回项：主题简要信息（不含 CSS 全文）
+ * 主题由后端 teach_ppt_theme 表管理，前端只按 code + version 拉取
+ */
 export interface PptTheme {
-  /** 主题编码，同时是 CSS 文件名与模板 theme_code 的合法取值 */
+  /** 主题编码，被模板的 themeCode 引用 */
   code: string;
   name: string;
-  description: string;
+  /** 版本号：CSS 更新时后端 +1，前端据此让本地缓存失效 */
+  version: number;
+  /** 兼容旧接口的说明字段，新接口可能不返回 */
+  description?: string;
+}
+
+/** GET /api/teach/ppt/themes/{code} 返回项：主题完整信息（含 CSS 全文） */
+export interface PptThemeDetail extends PptTheme {
+  /** 主题 CSS 全文，直接注入 Shadow DOM */
+  cssText: string;
 }
 
 /** GET /api/teach/ppt/template/list 返回项 */
@@ -185,7 +245,8 @@ export interface PrepareRecordQuery {
 
 /** 备课记录列表项（五类材料以布尔标记呈现有无） */
 export interface PrepareRecordItem {
-  id: number;
+  /** 雪花 ID 是 19 位 Long，后端按字符串直出；前端全程按原值透传，不做数字转换以免丢精度 */
+  id: number | string;
   chapterId: number;
   createTime: string;
   hasLessonPlan: boolean;
@@ -206,7 +267,7 @@ export interface PrepareRecordPage {
 
 /** GET /api/teach/prepare/record/detail 返回（五类材料全文） */
 export interface PrepareRecordDetail {
-  id: number;
+  id: number | string;
   chapterId: number;
   lessonPlan: string;
   keyPoints: string;

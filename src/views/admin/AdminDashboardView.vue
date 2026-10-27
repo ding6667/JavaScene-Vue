@@ -3,7 +3,7 @@
  * 运维仪表盘 —— UI 骨架页（后端无对应接口）
  *
  * 接口预留：后端未提供系统监控聚合接口（服务健康度 / 异常告警 / 访问趋势一类能力），
- * 需后端补充；或由前端组合已有的 GET /api/user/records、GET /api/knowledge/dataset/upload/list 自行计算。
+ * 需后端补充；或由前端组合已有的 GET /api/user/admin/list、GET /api/knowledge/dataset/upload/list 自行计算。
  * 因此本文件不接 api / pinia，以下所有列表均为空数组占位，仅保留交互与样式。
  */
 import { computed, ref } from 'vue';
@@ -108,7 +108,7 @@ function handleRefresh() {
       <AlertTriangle :size="14" />
       <span>
         接口预留：本页所需监控聚合能力（服务健康度、访问趋势、异常告警）后端尚未开放，当前为界面骨架。
-        待后端补充接口，或由前端组合 GET /api/user/records 与 GET /api/knowledge/dataset/upload/list 计算得出。
+        待后端补充接口，或由前端组合 GET /api/user/admin/list 与 GET /api/knowledge/dataset/upload/list 计算得出。
       </span>
     </div>
 
