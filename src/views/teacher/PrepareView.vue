@@ -30,13 +30,13 @@ import {
   Wrench,
 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
+import ChapterSelect from '@/components/ChapterSelect.vue';
 import PptDeck from '@/components/teacher/PptDeck.vue';
-import { fetchChapters } from '@/api/knowledge';
 import { downloadPpt, fetchPptTemplates } from '@/api/teacher';
 import { usePrepareStore } from '@/stores/prepare';
-import type { Chapter } from '@/types/knowledge';
+import { useChapters } from '@/composables/useChapters';
 import type { PptTemplate, TeachPrepareRequest } from '@/types/teacher';
-import { saveBlob } from '@/utils/download';
+import { isBlankPptx, saveBlob } from '@/utils/download';
 import { renderMarkdown, splitMarkdownSlides } from '@/utils/markdown';
 
 /** 生成开关字段名（与 TeachPrepareRequest 的字符串开关一一对应） */
@@ -72,7 +72,6 @@ const DETAIL_LEVELS: ChoiceOption[] = [
 ];
 
 const router = useRouter();
-const chapters = ref<Chapter[]>([]);
 const chapterId = ref<number | null>(null);
 const templates = ref<PptTemplate[]>([]);
 const templateId = ref<number | null>(null);
@@ -124,50 +123,13 @@ function resizeMessage() {
 
 watch(userMessage, () => nextTick(resizeMessage));
 
-/** 章节树下拉用的节点：标题前缀章节编号，children 为空时不给展开箭头 */
-interface ChapterNode {
-  id: number;
-  /** el-tree-select 默认 children 字段名 */
-  children?: ChapterNode[];
-  label: string;
-}
+/** 章节下拉：统一走 <ChapterSelect> + useChapters，页面不再自己拉章节列表 */
+const { labelOf, load: loadChapters } = useChapters();
 
-const chapterTree = computed<ChapterNode[]>(() => buildChapterTree(chapters.value));
+const selectedChapterTitle = computed(() => labelOf(chapterId.value));
 
-const selectedChapter = computed(() => chapters.value.find((c) => c.id === chapterId.value) ?? null);
-
-/**
- * 章标题（level=1）本身已带「第 N 章」，再拼一次编号会变成「1 第 1 章 …」，
- * 所以只对没有编号前缀的标题（节 / 小节）拼 chapterCode。
- */
-function chapterLabel(c: Chapter): string {
-  const hasNumber = /^第\s*\d+\s*[章节]/.test(c.title) || c.title.startsWith(c.chapterCode);
-  return hasNumber ? c.title : `${c.chapterCode} ${c.title}`;
-}
-
-/** 扁平列表（靠 parentId 组织）→ 树；父节点缺失的数据挂到根上，避免整棵子树消失 */
-function buildChapterTree(list: Chapter[]): ChapterNode[] {
-  const byParent = new Map<number, Chapter[]>();
-  const ids = new Set(list.map((c) => c.id));
-  for (const c of list) {
-    const parentKey = ids.has(c.parentId) ? c.parentId : 0;
-    const bucket = byParent.get(parentKey);
-    if (bucket) bucket.push(c);
-    else byParent.set(parentKey, [c]);
-  }
-  const toNode = (c: Chapter): ChapterNode => {
-    const kids = (byParent.get(c.id) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
-    return { id: c.id, label: chapterLabel(c), ...(kids.length ? { children: kids.map(toNode) } : {}) };
-  };
-  return (byParent.get(0) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder).map(toNode);
-}
-
-onMounted(async () => {
-  try {
-    chapters.value = await fetchChapters();
-  } catch {
-    // 错误由响应拦截器统一提示
-  }
+onMounted(() => {
+  void loadChapters();
 });
 
 /** 用户展开模板下拉时再拉列表，不占用登录后的首屏请求 */
@@ -240,10 +202,11 @@ async function handleGenerate() {
 /** 备课记录编号：优先用任务里的，刷新后也能从结果里取到 */
 const activeRecordId = computed(() => prepare.recordId ?? detail.value?.id ?? null);
 
-/** PPT 下载可用：有记录编号且后端已产出课件 */
-const canDownloadPpt = computed(
-  () => !!activeRecordId.value && (!!detail.value?.pptxUrl || !!slides.value.length),
-);
+/**
+ * PPT 下载可用：有记录编号，且本次备课确实留下了课件正文（pptxMd 能切出页）。
+ * pptxMd 为空时连下载入口都不展示——没有课件内容，后端也生成不出文件。
+ */
+const canDownloadPpt = computed(() => !!activeRecordId.value && !!slides.value.length);
 
 /** GET /api/teach/ppt/download?recordId= —— 真实文件流下载，不依赖 pptxUrl 直链 */
 async function handleDownloadPpt() {
@@ -252,6 +215,10 @@ async function handleDownloadPpt() {
   pptDownloading.value = true;
   try {
     const blob = await downloadPpt(id);
+    if (await isBlankPptx(blob)) {
+      ElMessage.warning('课件文件还没生成好，请稍后再试');
+      return;
+    }
     saveBlob(blob, `备课PPT_第${detail.value?.chapterId ?? id}章_${id}.pptx`);
     ElMessage.success('课堂 PPT 已下载');
   } catch {
@@ -303,18 +270,7 @@ function fmt(iso: string): string {
         <div class="config-row">
           <div class="config-item">
             <label class="config-label">教材章节</label>
-            <el-tree-select
-              v-model="chapterId"
-              :data="chapterTree"
-              node-key="id"
-              :props="{ label: 'label' }"
-              placeholder="选择章节"
-              filterable
-              check-strictly
-              :expand-on-click-node="false"
-              popper-class="chapter-tree-popper"
-              style="width: 320px;"
-            />
+            <ChapterSelect v-model="chapterId" placeholder="选择章节" style="width: 320px;" />
           </div>
           <button
             class="st-btn st-btn--primary generate-btn"
@@ -556,9 +512,9 @@ function fmt(iso: string): string {
             {{ prepare.stage === 'submitting' ? '正在把备课任务交给智能体…' : '智能体正在研读本章内容并生成材料…' }}
           </p>
           <p v-if="prepare.recordId" class="wait-meta">
-            已等待 {{ prepare.waitedSeconds }} 秒（第 {{ prepare.attempts }} 次查询）
+            已等待 {{ prepare.waitedSeconds }} 秒
           </p>
-          <p class="wait-hint">先等 3 秒，之后每 20 秒查一次进度；可以切到其它页面，等待不会中断，材料生成完成后回到本页即可查看。</p>
+          <p class="wait-hint">AI 正在拼命生成，请耐心等待；您可以离开此页面，记录不会消失。</p>
         </div>
         <button class="st-btn st-btn--secondary wait-cancel" @click="prepare.cancel()">
           <Ban :size="14" /> 取消生成
@@ -598,7 +554,7 @@ function fmt(iso: string): string {
         <div class="st-card meta-card">
           <div class="st-card__body meta-body">
             <div class="meta-group">
-              <span class="meta-sub">{{ selectedChapter?.title ?? '本章' }}</span>
+              <span class="meta-sub">{{ selectedChapterTitle || '本章' }}</span>
               <span class="meta-sub">备课时间 {{ fmt(detail.createTime) }}</span>
             </div>
             <div class="meta-ops">
@@ -678,8 +634,9 @@ function fmt(iso: string): string {
                 课件文件
               </a>
               <button
+                v-if="slides.length"
                 class="st-btn st-btn--ghost"
-                :disabled="!canDownloadPpt || pptDownloading"
+                :disabled="pptDownloading"
                 @click="handleDownloadPpt"
               >
                 <Loader2 v-if="pptDownloading" :size="13" class="spin" />
@@ -1279,27 +1236,3 @@ function fmt(iso: string): string {
 }
 </style>
 
-<style>
-/* 章节下拉浮层挂在 body 上，scoped 样式选不到，因此单开一个全局块保持黑白基调 */
-.chapter-tree-popper .el-tree-node__content {
-  border-radius: var(--radius-sm);
-}
-
-.chapter-tree-popper .el-tree-node__content:hover {
-  background: var(--bg-subtle);
-}
-
-.chapter-tree-popper .el-tree-node.is-current > .el-tree-node__content {
-  background: var(--bg-canvas);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.chapter-tree-popper .el-tree-node__expand-icon {
-  color: var(--text-tertiary);
-}
-
-.chapter-tree-popper .el-tree-node__expand-icon.is-leaf {
-  color: transparent;
-}
-</style>

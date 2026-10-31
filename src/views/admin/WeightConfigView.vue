@@ -15,24 +15,17 @@
 import { computed, onMounted, ref } from 'vue';
 import { Info, Plus, Save, SlidersHorizontal, Trash2 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
+import ChapterSelect from '@/components/ChapterSelect.vue';
 import {
-  fetchChapters,
   fetchKnowledgePoints,
   fetchWeights,
   saveWeightsBatch,
 } from '@/api/knowledge';
-import type { Chapter, QuestionWeight } from '@/types/knowledge';
+import { useChapters } from '@/composables/useChapters';
+import type { QuestionWeight } from '@/types/knowledge';
 
 /** ID 一律按字符串比对：knowledge_* 主键是雪花 ID，转成 JS number 会丢精度 */
 type RowId = number | string;
-
-/** 章节下拉项（只读，来自 /api/knowledge/chapter/list） */
-interface ChapterOption {
-  id: RowId;
-  title: string;
-  /** 章节编号，用于下拉里体现层级（如 1.3.1） */
-  code: string;
-}
 
 /** 权重行：字段对齐 POST /api/knowledge/weight/batch 数组元素 */
 interface WeightRow {
@@ -53,7 +46,6 @@ interface WeightRow {
 /** 难度分布必须是三段 0~100 的数字，逗号分隔 */
 const DIFFICULTY_PATTERN = /^\d{1,3},\d{1,3},\d{1,3}$/;
 
-const chapterOptions = ref<ChapterOption[]>([]);
 const chapterId = ref<RowId | null>(null);
 const rows = ref<WeightRow[]>([]);
 /** 当前章节的知识点，供「知识点」列下拉选择（后端按 knowledgePointId 关联，手输名字没用） */
@@ -83,17 +75,10 @@ const rowsValid = computed(() =>
 
 const savable = computed(() => rowsValid.value && !saving.value);
 
-onMounted(loadChapters);
+/** 章节数据统一走 useChapters（下拉用 <ChapterSelect>，这里只需按 id 回显名字） */
+const { labelOf, load: loadChapters } = useChapters();
 
-async function loadChapters() {
-  try {
-    const list: Chapter[] = await fetchChapters();
-    chapterOptions.value = list.map((c) => ({ id: c.id, title: c.title, code: c.chapterCode }));
-  } catch {
-    // api/index.ts 已统一弹错，这里只保证下拉为空时页面不崩
-    chapterOptions.value = [];
-  }
-}
+onMounted(() => void loadChapters());
 
 async function loadPointOptions(id: RowId) {
   try {
@@ -105,7 +90,9 @@ async function loadPointOptions(id: RowId) {
 }
 
 /** 换章节：知识点与已有配置都属于旧章节，必须一起重取，否则会把 A 章的知识点 ID 存到 B 章上 */
-async function onChapterChange(id: RowId) {
+async function onChapterChange(id: number | string | null) {
+  // 该下拉不可清空，null 只是 ChapterSelect 的类型全集，这里直接忽略
+  if (id === null) return;
   chapterId.value = id;
   rows.value = [];
   await loadPointOptions(id);
@@ -190,8 +177,7 @@ async function handleBatchSave() {
 }
 
 function fmtChapter(): string {
-  const c = chapterOptions.value.find((x) => String(x.id) === String(chapterId.value));
-  return c ? `${c.code} ${c.title}` : '未选择章节';
+  return chapterId.value === null ? '未选择章节' : labelOf(chapterId.value);
 }
 
 /** 空态文案：没选章节 / 选了章节但没配置，提示语不一样 */
@@ -225,8 +211,7 @@ const saveHintText = computed(() => {
     <div class="wc-notice">
       <Info :size="14" />
       <span>
-        本页读写 <code>/api/knowledge/weight/list</code>、<code>/api/knowledge/weight/batch</code>。
-        保存按「章节 + 知识点」upsert，整批在一个事务内（任一条失败全批回滚）；
+        保存时会按「章节 + 知识点」逐行更新，整批一起成功或一起失败；
         <b>权重是相对系数</b>（出题时按各行占比分配，不要求合计 100）；
         难度分布写三段数字「易,中,难」，如 <code>30,50,20</code>，备课智能体原样取用。
       </span>
@@ -237,21 +222,12 @@ const saveHintText = computed(() => {
       <div class="st-card__body toolbar-row">
         <div class="field">
           <label class="field-label">教材章节</label>
-          <el-select
+          <ChapterSelect
             :model-value="chapterId"
             placeholder="选择章节"
             style="width: 300px;"
-            filterable
-            no-data-text="章节数据加载失败"
             @update:model-value="onChapterChange"
-          >
-            <el-option
-              v-for="c in chapterOptions"
-              :key="String(c.id)"
-              :label="`${c.code} ${c.title}`"
-              :value="c.id"
-            />
-          </el-select>
+          />
         </div>
         <div class="field">
           <label class="field-label">当前章节</label>

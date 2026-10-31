@@ -163,9 +163,7 @@ onMounted(async () => {
         <div>
           <h2 class="st-card__title">筛选条件</h2>
           <p class="st-card__hint">
-            已对接 @/api/exam.fetchWrongQuestions（GET /api/exam/wrong-question/list）+
-            @/api/study.fetchProgress（GET /api/study/progress/get）；两接口只返回当前登录用户数据，
-            故本页为错题热点排行而非全班名单
+            按当前账号可见的错题与学习进度汇总 · 全班维度的薄弱名单还在建设中
           </p>
         </div>
         <span class="st-badge st-badge--neutral shell-badge">仅单个学生数据</span>

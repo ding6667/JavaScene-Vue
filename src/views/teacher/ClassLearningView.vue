@@ -24,6 +24,7 @@ import {
   Users,
 } from 'lucide-vue-next';
 import { fetchClassStats } from '@/api/teacher';
+import { useDifficultyConfigs } from '@/composables/useDifficultyConfigs';
 import { fetchClasses } from '@/api/class';
 import type { ClassResponse } from '@/types/class';
 import type { ClassStats } from '@/types/teacher';
@@ -74,16 +75,12 @@ const TYPE_LABELS: Record<number, string> = {
   6: '简答题',
 };
 
-const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '基础',
-  2: '进阶',
-  3: '拔高',
-};
+// 难度改为配置表下发（difficultyName / difficultyConfigId），不在前端写死
+const difficultyStore = useDifficultyConfigs();
+const difficultyText = difficultyStore.difficultyText;
 
 const typeText = (value: number | null | undefined) =>
   value == null ? '—' : TYPE_LABELS[Number(value)] ?? `题型 ${value}`;
-const difficultyText = (value: number | null | undefined) =>
-  value == null ? '—' : DIFFICULTY_LABELS[Number(value)] ?? `难度 ${value}`;
 
 /** 高频错题 Top5（按错误次数） */
 const hotWrong = computed(() =>
@@ -95,7 +92,7 @@ const hotWrong = computed(() =>
       key: w.id,
       stem: w.content && w.content.trim() ? w.content.trim().slice(0, 48) : `题目 #${w.questionId}`,
       count: w.wrongCount ?? 0,
-      meta: `题型 ${typeText(w.type)} · 难度 ${difficultyText(w.difficulty)} · ${w.mastered === 1 ? '已掌握' : '未掌握'}`,
+      meta: `题型 ${typeText(w.type)} · 难度 ${difficultyText(w)} · ${w.mastered === 1 ? '已掌握' : '未掌握'}`,
     })),
 );
 

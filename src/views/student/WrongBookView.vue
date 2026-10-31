@@ -26,6 +26,7 @@ import {
 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
 import { fetchWrongQuestions, markWrongQuestionMastered } from '@/api/exam';
+import { useDifficultyConfigs } from '@/composables/useDifficultyConfigs';
 import type { WrongQuestionItem } from '@/types/exam';
 
 /** 题型码值 → 中文标签（与后端 QuestionTypeEnum 一致） */
@@ -38,12 +39,9 @@ const TYPE_LABELS: Record<number, string> = {
   6: '简答题',
 };
 
-/** 难度码值 → 中文标签（与后端 QuestionDifficultyEnum 一致） */
-const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '基础',
-  2: '进阶',
-  3: '拔高',
-};
+// 难度改为配置表下发（difficultyName / difficultyConfigId），不在前端写死
+const difficultyStore = useDifficultyConfigs();
+const difficultyText = difficultyStore.difficultyText;
 
 const router = useRouter();
 
@@ -57,17 +55,13 @@ const onlyUnmastered = ref(false);
 /** 正在提交「标记已掌握」的 questionId，用于按钮禁用与 loading */
 const masteringId = ref<number | null>(null);
 
-function describeError(apiPath: string, e: unknown): string {
+function describeError(what: string, e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  return /未实现/.test(msg) ? `接口待实现：${apiPath}` : `接口调用失败：${apiPath}（${msg}）`;
+  return /未实现/.test(msg) ? `${what}暂未开放` : `${what}失败：${msg}`;
 }
 
 function typeLabel(v: number): string {
   return TYPE_LABELS[Number(v)] ?? `题型 ${v ?? '—'}`;
-}
-
-function difficultyLabel(v: number): string {
-  return DIFFICULTY_LABELS[Number(v)] ?? `难度 ${v ?? '—'}`;
 }
 
 function isMastered(w: WrongQuestionItem): boolean {
@@ -95,6 +89,7 @@ const sorted = computed(() =>
 );
 
 async function load() {
+  difficultyStore.load();
   loading.value = true;
   loadError.value = null;
   try {
@@ -102,7 +97,7 @@ async function load() {
     all.value = Array.isArray(list) ? list : [];
   } catch (e) {
     all.value = [];
-    loadError.value = describeError('@/api/exam.fetchWrongQuestions', e);
+    loadError.value = describeError('错题加载', e);
   } finally {
     loading.value = false;
   }
@@ -115,17 +110,30 @@ async function markMastered(w: WrongQuestionItem) {
   try {
     await markWrongQuestionMastered(w.questionId);
     w.mastered = 1;
-    ElMessage.success('已标记为掌握，正在与后端核对');
+    ElMessage.success('已标记为掌握');
     await load();
   } catch (e) {
-    ElMessage.error(describeError('@/api/exam.markWrongQuestionMastered', e));
+    ElMessage.error(describeError('标记已掌握', e));
   } finally {
     masteringId.value = null;
   }
 }
 
-function redo(w: WrongQuestionItem) {
-  router.push({ path: '/student/practice', query: { questionId: w.questionId } });
+/**
+ * 重做：新标签页打开作答页（与刷题列表一致，错题本页面不被打断）。
+ * 返回原生链接交给 <a target="_blank">，不走 window.open，避免被弹窗策略拦掉后毫无反应。
+ */
+function solveHref(questionId: number | string | null | undefined): string {
+  const raw = String(questionId ?? '').trim();
+  if (!raw) return '';
+  try {
+    return router.resolve({
+      name: 'StudentPracticeSolve',
+      params: { questionId: raw },
+    }).href;
+  } catch {
+    return `/student/practice/solve/${encodeURIComponent(raw)}`;
+  }
 }
 
 onMounted(load);
@@ -135,7 +143,7 @@ onMounted(load);
   <div class="st-view">
     <header class="st-page-header">
       <h1 class="st-page-title">错题智能管理</h1>
-      <p class="st-page-subtitle">刷题答错由后端自动收录 · 支持重做与「已掌握」标记</p>
+      <p class="st-page-subtitle">刷题答错的题目会自动收录 · 支持重做与「已掌握」标记</p>
     </header>
 
     <!-- 概览与数据口径说明 -->
@@ -145,7 +153,7 @@ onMounted(load);
         <div>
           <h2 class="st-card__title">错题概览</h2>
           <p class="st-card__hint">
-            已对接 @/api/exam.fetchWrongQuestions · 后端返回数组（无分页、无总数字段），统计由本页聚合
+            答错过的题目都会收录在这里，统计按当前筛选的错题实时汇总
           </p>
         </div>
       </div>
@@ -165,8 +173,8 @@ onMounted(load);
           </div>
         </div>
         <p class="scope-note">
-          后端 wrong-question/list 只下发 content / type / difficulty / wrongCount / lastAnswer / mastered / lastWrongTime，
-          未提供正确答案、解析与知识点维度，因此本页不做薄弱知识点标签，也不展示正确答案。
+          错题本记录的是你答错过的题目与错误次数，答案与解析请在作答页查看；
+          想巩固就点「重做」，已经弄懂的题点「标记已掌握」。
         </p>
       </div>
     </div>
@@ -212,7 +220,7 @@ onMounted(load);
       <div v-for="w in sorted" :key="w.id ?? w.questionId" class="st-card wrong-card">
         <div class="st-card__header" style="flex-wrap: wrap;">
           <span class="st-badge st-badge--outline">{{ typeLabel(w.type) }}</span>
-          <span class="st-badge st-badge--neutral">{{ difficultyLabel(w.difficulty) }}</span>
+          <span class="st-badge st-badge--neutral">{{ difficultyText(w) }}</span>
           <span class="st-badge" :class="Number(w.wrongCount) > 1 ? 'st-badge--danger' : 'st-badge--neutral'">
             错 {{ w.wrongCount ?? '—' }} 次
           </span>
@@ -221,9 +229,14 @@ onMounted(load);
           </span>
 
           <div class="wrong-card__actions">
-            <button class="st-text-btn" @click="redo(w)">
+            <a
+              class="st-text-btn"
+              :href="solveHref(w.questionId)"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               <Redo2 :size="12" style="margin-right: 2px;" /> 重做
-            </button>
+            </a>
             <button
               class="st-text-btn"
               :disabled="isMastered(w) || masteringId !== null"
@@ -237,6 +250,7 @@ onMounted(load);
         </div>
 
         <div class="st-card__body">
+          <div v-if="w.shortTitle" class="wrong-title">{{ w.shortTitle }}</div>
           <div class="wrong-stem">{{ w.content || '—' }}</div>
 
           <div class="answer-compare">
@@ -247,7 +261,7 @@ onMounted(load);
             </div>
             <div class="answer-row answer-row--meta">
               <ListChecks :size="13" />
-              <span class="answer-row__label">questionId</span>
+              <span class="answer-row__label">题目编号</span>
               <span class="answer-row__value">{{ w.questionId ?? '—' }}</span>
             </div>
           </div>
@@ -317,6 +331,14 @@ onMounted(load);
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.wrong-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.6;
+  margin-bottom: 6px;
 }
 
 .wrong-stem {

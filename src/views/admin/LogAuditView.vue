@@ -56,13 +56,11 @@ const filtered = computed(() => {
 });
 
 function handleQuery() {
-  // 接口预留：后端未提供日志查询接口，此处不发起请求
-  ElMessage.info('接口预留：后端未提供操作日志 / 智能体调用日志 / 错误日志接口');
+  ElMessage.info('日志查询暂未开放，当前展示的是示例数据');
 }
 
 function handleExport() {
-  // 接口预留：后端未提供日志导出接口
-  ElMessage.info('接口预留：后端未提供日志导出接口');
+  ElMessage.info('日志导出暂未开放，敬请期待');
 }
 
 function fmt(iso: string): string {
@@ -78,12 +76,12 @@ function fmt(iso: string): string {
   <div class="st-view">
     <header class="st-page-header">
       <h1 class="st-page-title">日志审计</h1>
-      <p class="st-page-subtitle">用户操作日志 · 智能体运行日志 · 系统异常日志，按 requestId 支持异常行为追溯</p>
+      <p class="st-page-subtitle">用户操作日志 · 智能体运行日志 · 系统异常日志，异常行为可逐条追溯</p>
     </header>
 
     <div class="log-notice">
       <ScrollText :size="14" />
-      <span>接口预留：后端未提供操作日志 / 智能体调用日志 / 错误日志接口，本页仅保留筛选条件与表格骨架。</span>
+      <span>日志审计功能正在建设中，上线后可在这里按类型、时间和关键词检索全部日志。</span>
     </div>
 
     <!-- 筛选工具栏 -->
@@ -102,7 +100,7 @@ function fmt(iso: string): string {
         </div>
         <div class="search-box">
           <Search :size="14" />
-          <input v-model="keyword" class="search-input" placeholder="搜索来源 / 内容 / requestId" />
+          <input v-model="keyword" class="search-input" placeholder="搜索来源 / 内容 / 追踪编号" />
         </div>
         <el-date-picker
           v-model="range"
@@ -126,7 +124,7 @@ function fmt(iso: string): string {
       <div class="st-card__header">
         <div>
           <h2 class="st-card__title">日志明细</h2>
-          <p class="st-card__hint">命中 {{ filtered.length }} 条 · 数据来源待后端接口提供</p>
+          <p class="st-card__hint">命中 {{ filtered.length }} 条</p>
         </div>
       </div>
       <div class="table-wrap">
@@ -138,7 +136,7 @@ function fmt(iso: string): string {
               <th style="width: 170px;">来源</th>
               <th style="width: 110px;">操作人</th>
               <th>内容</th>
-              <th style="width: 130px;">链路 ID</th>
+              <th style="width: 130px;">追踪编号</th>
             </tr>
           </thead>
           <tbody>
@@ -172,7 +170,7 @@ function fmt(iso: string): string {
         </table>
         <div v-if="filtered.length === 0" class="st-empty">
           <ScrollText :size="38" :stroke-width="1.2" class="st-empty__icon" />
-          <div class="st-empty__text">暂无日志数据 · 接口预留：后端未提供日志查询接口</div>
+          <div class="st-empty__text">暂无日志数据</div>
         </div>
       </div>
     </div>

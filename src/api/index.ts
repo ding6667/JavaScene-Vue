@@ -3,6 +3,19 @@ import { ElMessage } from 'element-plus';
 import { logout as revokeToken } from '@/api/auth';
 import { clearSessionStorage, TOKEN_KEY } from '@/utils/session';
 
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    /**
+     * 403 时只 reject，不弹全局错误、不吊销 token、不跳登录。
+     *
+     * 用于「权限可能不足的只读接口」——例如学生端读难度配置，后端若只给教师/管理员开放，
+     * 学生打开练习页就会拿到 403。这类 403 是角色不匹配，不是越权攻击，
+     * 不该触发策略 A 的强制下线；由调用方自己降级（空列表 / 隐藏筛选项）即可。
+     */
+    skipForbiddenLogout?: boolean;
+  }
+}
+
 // ==================== 配置 axios 实例 ====================
 // 开发环境通过 Vite 代理转发 /api 到后端（见 vite.config.js），无需跨域
 // 生产环境可通过 VITE_API_BASE_URL 环境变量覆盖
@@ -140,6 +153,8 @@ axiosInstance.interceptors.response.use(
             return Promise.reject(new Error(message));
           }
           if (code === 403) {
+            // 标记过的只读接口：403 交给调用方降级，不升级成安全事件
+            if (config.skipForbiddenLogout) return Promise.reject(new Error(message));
             handleForbidden(message);
             return Promise.reject(new Error(message));
           }
@@ -206,6 +221,8 @@ axiosInstance.interceptors.response.use(
           // 开发期留一条可定位的日志：是哪个接口触发了强制下线
           console.warn('[403]', config?.method?.toUpperCase(), config?.url, backendMessage);
         }
+        // 标记过的只读接口：角色不匹配，降级即可，不做吊销 / 跳登录
+        if (config?.skipForbiddenLogout) return Promise.reject(error);
         handleForbidden(backendMessage || '没有权限访问该资源，已退出登录');
         return Promise.reject(error);
       }

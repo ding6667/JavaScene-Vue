@@ -14,16 +14,17 @@ import {
   Wrench,
 } from 'lucide-vue-next';
 import { debugCode } from '@/api/study';
-import { fetchChapters } from '@/api/knowledge';
+import ChapterSelect from '@/components/ChapterSelect.vue';
 import CodeEditor from '@/components/student/CodeEditor.vue';
-import type { Chapter } from '@/types/knowledge';
+import { useChapters } from '@/composables/useChapters';
 import type { CodeDebugResult, RunStatus } from '@/types/study';
 
 const route = useRoute();
 const router = useRouter();
 
 const chapterId = ref<number | null>(route.query.chapterId ? Number(route.query.chapterId) : null);
-const chapters = ref<Chapter[]>([]);
+/** 章节名回显与下拉共用 useChapters */
+const { labelOf, load: loadChapters } = useChapters();
 /**
  * 错误类型筛选为 UI 预留项：POST /api/study/code/debug 入参只有
  * codeContent / chapterId / questionId，后端会自行判定错误类型。
@@ -67,11 +68,8 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   SE: '系统错误',
 };
 
-/** 关联章节名（来自真实章节列表） */
-const chapterName = computed(() => {
-  const ch = chapters.value.find((c) => c.id === chapterId.value);
-  return ch ? `${ch.chapterCode} ${ch.title}` : '';
-});
+/** 关联章节名（来自 useChapters 的共享章节列表） */
+const chapterName = computed(() => (chapterId.value ? labelOf(chapterId.value) : ''));
 
 /** errorLineList 是字符串数组，编辑器需要数字行号 */
 const errorLineNumbers = computed<number[]>(() => {
@@ -90,12 +88,8 @@ const statusLabel = computed(() => {
   return RUN_STATUS_LABEL[r.status] ?? r.statusDesc ?? r.status;
 });
 
-onMounted(async () => {
-  try {
-    chapters.value = await fetchChapters();
-  } catch {
-    // 错误已由响应拦截器统一提示
-  }
+onMounted(() => {
+  void loadChapters();
 });
 
 function loadSample() {
@@ -123,8 +117,8 @@ async function handleDebug() {
 <template>
   <div class="st-view debug-view">
     <div class="detail-topbar">
-      <button class="st-text-btn" @click="router.push('/student/code')">
-        <ArrowLeft :size="14" style="margin-right: 4px;" /> 返回代码实操
+      <button class="st-text-btn" @click="router.push('/student/practice')">
+        <ArrowLeft :size="14" style="margin-right: 4px;" /> 返回刷题练习
       </button>
     </div>
 
@@ -136,19 +130,12 @@ async function handleDebug() {
     <!-- 分析配置 -->
     <div class="st-card config-card">
       <div class="st-card__body config-row">
-        <el-select
+        <ChapterSelect
           v-model="chapterId"
           placeholder="关联章节（可选）"
           clearable
           style="width: 240px;"
-        >
-          <el-option
-            v-for="c in chapters"
-            :key="c.id"
-            :label="`${c.chapterCode} ${c.title}`"
-            :value="c.id"
-          />
-        </el-select>
+        />
 
         <el-select v-model="errorType" style="width: 140px;">
           <el-option v-for="o in ERROR_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
@@ -255,7 +242,7 @@ async function handleDebug() {
 
             <div class="debug-notice">
               依据教学约束，智能体不会输出完整可运行代码——请根据以上思路自行修改后，回到
-              <a href="#" @click.prevent="router.push('/student/code')">代码实操</a> 页面运行验证。
+              <a href="#" @click.prevent="router.push('/student/practice')">刷题练习</a> 作答页运行验证。
             </div>
           </template>
         </div>

@@ -55,8 +55,7 @@ function handleSave() {
     ElMessage.warning('四维评分权重合计必须等于 100%');
     return;
   }
-  // 接口预留：全局系统参数无独立后端接口；如按用户键值复用，见文件头 GET/PUT /api/settings/* 说明
-  ElMessage.info('接口预留：后端未提供全局系统参数接口，可评估复用 /api/settings 用户级键值配置');
+  ElMessage.info('全局参数保存暂未开放，当前设置仅在本次浏览生效');
 }
 
 function handleReset() {
@@ -74,7 +73,7 @@ function handleReset() {
     aiGradingEnabled: true,
     backupPeriodDays: 1,
   };
-  ElMessage.info('已重置为界面默认值（未提交后端）');
+  ElMessage.info('已重置为界面默认值，尚未保存');
 }
 </script>
 
@@ -88,9 +87,8 @@ function handleReset() {
     <div class="settings-notice">
       <ServerCog :size="14" />
       <span>
-        本页为参数骨架。已确认可复用：GET/PUT /api/settings/getCommonSettings | updateCommonSettings(configKey, configValue) | defaultSettings
-        （教师端常规设置在用的真实接口，按登录用户存储，运维端复用需自行接入）；
-        接口预留：评分权重可用 POST /api/knowledge/weight/batch。
+        本页集中管理平台的基础参数与评分规则，修改后对全平台生效。
+        部分设置项还在陆续开放中，未开放的会标注「建设中」。
       </span>
     </div>
 
@@ -100,7 +98,7 @@ function handleReset() {
         <ServerCog :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">基本设置</h2>
-          <p class="st-card__hint">已确认可复用：/api/settings/getCommonSettings 键值配置（configKey 整数 / configValue 字符串）</p>
+          <p class="st-card__hint">系统名称会显示在登录页与导航栏，教材版本决定智能体的问答依据</p>
         </div>
       </div>
       <div class="st-card__body">
@@ -121,7 +119,7 @@ function handleReset() {
       <div class="st-card__header">
         <div>
           <h2 class="st-card__title">编程题评分标准（四维权重）</h2>
-          <p class="st-card__hint">接口预留：评分权重可用 POST /api/knowledge/weight/batch</p>
+          <p class="st-card__hint">四项权重之和应为 100%，保存后立即用于编程题评分</p>
         </div>
       </div>
       <div class="st-card__body">
@@ -157,7 +155,7 @@ function handleReset() {
         <div class="st-card__header">
           <div>
             <h2 class="st-card__title">刷题规则</h2>
-            <p class="st-card__hint">接口预留：后端未提供全局刷题规则参数接口</p>
+            <p class="st-card__hint">刷题规则功能建设中，当前参数暂不生效</p>
           </div>
         </div>
         <div class="st-card__body">
@@ -179,7 +177,7 @@ function handleReset() {
         <div class="st-card__header">
           <div>
             <h2 class="st-card__title">作业权限与备份</h2>
-            <p class="st-card__hint">接口预留：备份周期与「数据备份」页同源，后端未提供接口</p>
+            <p class="st-card__hint">补交与备份策略建设中，当前设置暂不生效</p>
           </div>
         </div>
         <div class="st-card__body">

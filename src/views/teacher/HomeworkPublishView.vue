@@ -1,27 +1,31 @@
 <script setup lang="ts">
 /**
  * 作业发布
- * - POST /api/teach/homework/publish  { title, content, chapterId, deadline, classId | grade, allowLateSubmit, totalScore }
+ * - POST /api/teach/homework/publish  { title, content, chapterId, deadline, classId | grade, allowLateSubmit, questions[] }
  * - GET  /api/teach/homework/list     { id, title, content, chapterId, deadline, status, createTime }
  * - GET  /api/teach/homework/detail?homeworkId=   作业详情 + 题目完整快照（含后端给的 statusName）
  * - POST /api/teach/homework/close    { homeworkId, closeReason? } 截止收题，返回后端提示语
  * - GET  /api/class/list              班级下拉（classId 取 classId 字段）
  *
  * 字段口径：
- * - 发布范围二选一：指定班级传 classId，全年级传 grade，提交时只带其一；
- * - allowLateSubmit（0/1）与 totalScore 后端已支持，直接提交；
- * - 题量 questionCount 不在 publish 请求体内（题目由题库抽题/出题接口决定），控件仅保留展示；
+ * - 发布范围二选一：指定班级传 classId，全年级传 grade，两者都不传或都传后端报 400；
+ * - 题目从选题面板勾选（也可随机抽题），随作业一起提交 questions[{questionId, score}]，
+ *   后端在同一事务里写作业主表与题目关联表；
+ * - 带题目时不传 totalScore（题量与总分都由后端按题目分值汇总）；不带题目时才按前端传的总分落库；
+ * - allowLateSubmit（0/1）直接提交；
  * - status 码值语义由后端 openapi 注明（1未发布/2已发布/3已截止/4已归档），徽章据此渲染，
  *   详情接口回填的中文 statusName 优先使用。
  */
-import { computed, onMounted, ref } from 'vue';
-import { Ban, CalendarClock, Eye, FileEdit, Loader2, Send } from 'lucide-vue-next';
+import { computed, onMounted, ref, watch } from 'vue';
+import { ArrowLeft, Ban, CalendarClock, Eye, FileEdit, Layers, Loader2, Send } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { fetchChapters } from '@/api/knowledge';
+import ChapterSelect from '@/components/ChapterSelect.vue';
+import QuestionPicker from '@/components/teacher/QuestionPicker.vue';
 import { closeHomework, fetchHomeworkDetail, fetchPublishedHomeworks, publishHomework } from '@/api/teacher';
 import { fetchClasses } from '@/api/class';
+import { useChapters } from '@/composables/useChapters';
 import type { ClassResponse } from '@/types/class';
-import type { Chapter } from '@/types/knowledge';
+import type { QuestionAdminItem } from '@/types/exam';
 import type {
   HomeworkDetail,
   HomeworkPublishRequest,
@@ -39,7 +43,8 @@ const SCOPES: { key: Scope; label: string }[] = [
   { key: 'grade', label: '全年级' },
 ];
 
-const chapters = ref<Chapter[]>([]);
+/** 章节名回显与下拉共用 useChapters（章节树构树逻辑也统一到 utils/chapterTree） */
+const { findById: findChapter, load: loadChapters } = useChapters();
 const classes = ref<ClassResponse[]>([]);
 const published = ref<PublishedHomework[]>([]);
 const loading = ref(true);
@@ -57,8 +62,37 @@ const classId = ref<number | null>(null);
 const grade = ref('');
 const allowLateSubmit = ref(0);
 const totalScore = ref(0);
-/** 发布接口无该字段，仅占位展示 */
-const questionCount = ref(8);
+/** 老师手动改过总分后，不再跟着已选题目分值自动变 */
+const totalScoreTouched = ref(false);
+
+// ---------- 从题库选题（面板与题库页共用） ----------
+const pickerVisible = ref(false);
+const picked = ref<QuestionAdminItem[]>([]);
+const pickedIds = computed(() => picked.value.map((q) => Number(q.id)));
+const pickedScore = computed(() =>
+  picked.value.reduce((sum, q) => sum + (Number(q.score) || 0), 0),
+);
+/** 已选题目涉及的章节：一次作业只覆盖一个章节，跨章节要挡下来 */
+const pickedChapters = computed(() => [
+  ...new Set(picked.value.map((q) => Number(q.chapterId ?? 0)).filter((id) => id > 0)),
+]);
+const chapterMismatch = computed(
+  () =>
+    formChapterId.value != null &&
+    pickedChapters.value.some((id) => id !== Number(formChapterId.value)),
+);
+
+watch(picked, () => {
+  if (!totalScoreTouched.value) totalScore.value = pickedScore.value;
+  // 还没选章节时，用已选题目的章节自动带上
+  if (formChapterId.value == null && pickedChapters.value.length === 1) {
+    formChapterId.value = pickedChapters.value[0];
+  }
+});
+
+function removePicked(id: number) {
+  picked.value = picked.value.filter((q) => Number(q.id) !== id);
+}
 
 // ---------- 列表操作状态 ----------
 /** homeworkId -> 详情接口返回的 statusName，列表徽章优先取这里的权威状态名 */
@@ -74,44 +108,9 @@ const segSliderStyle = computed(() => ({
   width: 'calc(50% - 4px)',
 }));
 
-const chapterTitle = (id: number) => chapters.value.find((c) => c.id === id)?.title ?? `章节 ${id}`;
+const chapterTitle = (id: number) => findChapter(id)?.title ?? `章节 ${id}`;
 const classNameOf = (id: number | null) =>
   id == null ? '' : classes.value.find((c) => c.classId === id)?.className ?? `班级 ${id}`;
-
-/** 章节树下拉节点：与 AI 备课页保持同一套结构 */
-interface ChapterNode {
-  id: number;
-  children?: ChapterNode[];
-  label: string;
-}
-
-const chapterTree = computed<ChapterNode[]>(() => buildChapterTree(chapters.value));
-
-/**
- * 章标题（level=1）本身已带「第 N 章」，再拼编号会变成「1 第 1 章 …」，
- * 所以只对没有编号前缀的标题（节 / 小节）拼 chapterCode。
- */
-function chapterLabel(c: Chapter): string {
-  const hasNumber = /^第\s*\d+\s*[章节]/.test(c.title) || c.title.startsWith(c.chapterCode);
-  return hasNumber ? c.title : `${c.chapterCode} ${c.title}`;
-}
-
-/** 扁平列表（靠 parentId 组织）→ 树；父节点缺失的数据挂到根上，避免整棵子树消失 */
-function buildChapterTree(list: Chapter[]): ChapterNode[] {
-  const byParent = new Map<number, Chapter[]>();
-  const ids = new Set(list.map((c) => c.id));
-  for (const c of list) {
-    const parentKey = ids.has(c.parentId) ? c.parentId : 0;
-    const bucket = byParent.get(parentKey);
-    if (bucket) bucket.push(c);
-    else byParent.set(parentKey, [c]);
-  }
-  const toNode = (c: Chapter): ChapterNode => {
-    const kids = (byParent.get(c.id) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
-    return { id: c.id, label: chapterLabel(c), ...(kids.length ? { children: kids.map(toNode) } : {}) };
-  };
-  return (byParent.get(0) ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder).map(toNode);
-}
 
 function fmt(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -154,11 +153,11 @@ async function refreshList() {
 async function load() {
   loading.value = true;
   try {
-    [chapters.value, classes.value, published.value] = await Promise.all([
-      fetchChapters(),
+    [classes.value, published.value] = await Promise.all([
       fetchClasses(),
       fetchPublishedHomeworks(),
     ]);
+    await loadChapters();
   } catch {
     // 错误由响应拦截器统一提示
   } finally {
@@ -170,6 +169,8 @@ onMounted(load);
 
 const canPublish = computed(() => {
   if (!title.value.trim() || !formChapterId.value || !deadline.value || !content.value.trim()) return false;
+  // 作业必须带题，且题目都得属于所选章节
+  if (!picked.value.length || chapterMismatch.value) return false;
   return scope.value === 'class' ? classId.value != null : !!grade.value.trim();
 });
 
@@ -183,6 +184,8 @@ function resetForm() {
   scope.value = 'class';
   allowLateSubmit.value = 0;
   totalScore.value = 0;
+  totalScoreTouched.value = false;
+  picked.value = [];
 }
 
 async function handlePublish() {
@@ -196,7 +199,11 @@ async function handlePublish() {
       // el-date-picker 已按 value-format 输出 'YYYY-MM-DD HH:mm:ss' 字符串
       deadline: deadline.value,
       allowLateSubmit: allowLateSubmit.value,
-      totalScore: totalScore.value,
+      // 带题目时，题量与总分都由后端按题目分值汇总，前端不再传 totalScore
+      questions: picked.value.map((q) => ({
+        questionId: Number(q.id),
+        score: Number.isFinite(Number(q.score)) ? Number(q.score) : undefined,
+      })),
     };
     // 发布范围二选一，只带上其一
     let scopeText = '';
@@ -207,8 +214,8 @@ async function handlePublish() {
       payload.grade = grade.value.trim();
       scopeText = `全年级 ${payload.grade}`;
     }
-    const id = await publishHomework(payload);
-    ElMessage.success(`作业已发布到${scopeText}${id ? `（编号 ${id}）` : ''}，学生端可见`);
+    await publishHomework(payload);
+    ElMessage.success(`作业已发布到${scopeText}，共 ${pickedIds.value.length} 题，学生端可见`);
     await refreshList();
     resetForm();
   } catch {
@@ -252,7 +259,14 @@ function flatten(value: unknown): string[] {
   return [stringifyNode(value)];
 }
 
-function parseJsonField(raw: string | null | undefined): ParsedField {
+/**
+ * options / answer / knowledgePoints 快照里是 JSON 字符串，解析失败则回退原文展示。
+ * 入参放开成 unknown：若哪天后端改成直接下发数组/对象，也不会渲染成 [object Object]。
+ */
+function parseJsonField(raw: unknown): ParsedField {
+  if (raw !== null && raw !== undefined && typeof raw === 'object') {
+    return { text: JSON.stringify(raw), items: flatten(raw), parsed: true, empty: false };
+  }
   const text = String(raw ?? '').trim();
   if (!text) return { text, items: [], parsed: false, empty: true };
   try {
@@ -372,18 +386,7 @@ async function handleClose(hw: PublishedHomework) {
           </div>
           <div class="form-item">
             <label class="form-label">教材章节</label>
-            <el-tree-select
-              v-model="formChapterId"
-              :data="chapterTree"
-              node-key="id"
-              :props="{ label: 'label' }"
-              placeholder="选择章节"
-              filterable
-              check-strictly
-              :expand-on-click-node="false"
-              popper-class="chapter-tree-popper"
-              style="width: 100%;"
-            />
+            <ChapterSelect v-model="formChapterId" placeholder="选择章节" style="width: 100%;" />
           </div>
           <div class="form-item">
             <label class="form-label">截止时间</label>
@@ -437,9 +440,46 @@ async function handleClose(hw: PublishedHomework) {
               />
             </div>
             <div class="form-item" style="width: 150px;">
-              <label class="form-label">作业总分</label>
-              <el-input-number v-model="totalScore" :min="0" :max="1000" :step="5" style="width: 100%;" />
+              <label class="form-label">
+                {{ picked.length ? '作业总分（按题目汇总）' : '作业总分' }}
+              </label>
+              <el-input-number
+                v-model="totalScore"
+                :min="0"
+                :max="1000"
+                :step="5"
+                :disabled="picked.length > 0"
+                style="width: 100%;"
+                @change="totalScoreTouched = true"
+              />
             </div>
+          </div>
+
+          <div class="form-item">
+            <div class="pick-head">
+              <label class="form-label">作业题目（必选）</label>
+              <div class="pick-ops">
+                <span class="pick-count">已选 {{ picked.length }} 题 · 总分 {{ pickedScore }}</span>
+                <button class="st-btn st-btn--secondary" @click="pickerVisible = true">
+                  <Layers :size="13" /> 从题库选题
+                </button>
+                <button class="st-btn st-btn--ghost" :disabled="!picked.length" @click="picked = []">
+                  清空
+                </button>
+              </div>
+            </div>
+            <div class="pick-list">
+              <span v-for="q in picked" :key="String(q.id)" class="pick-tag" :title="q.content">
+                {{ (q.content || '').slice(0, 14) || '题目' }}
+                <button class="pick-tag__x" title="移出本次作业" @click="removePicked(Number(q.id))">×</button>
+              </span>
+              <span v-if="!picked.length" class="pick-empty">
+                还没有选题，点「从题库选题」按条件勾选，或随机抽一组
+              </span>
+            </div>
+            <p v-if="chapterMismatch" class="pick-warn">
+              已选题目里有不属于当前章节的题目，请先把章节改成题目所在章节，或移除跨章节的题目。
+            </p>
           </div>
 
           <div class="form-row">
@@ -449,14 +489,6 @@ async function handleClose(hw: PublishedHomework) {
                 <el-switch v-model="allowLateSubmit" :active-value="1" :inactive-value="0" />
                 <span class="switch-text">{{ allowLateSubmit === 1 ? '过期后学生仍可提交' : '过期即停止收题' }}</span>
               </div>
-            </div>
-            <!-- 题量控件仅作展示，提交时不带该字段 -->
-            <div class="form-item" style="width: 150px;">
-              <label class="form-label">
-                题量
-                <span class="st-badge st-badge--neutral field-note">暂未开放</span>
-              </label>
-              <el-input-number v-model="questionCount" :min="3" :max="20" disabled style="width: 100%;" />
             </div>
           </div>
 
@@ -471,8 +503,7 @@ async function handleClose(hw: PublishedHomework) {
           </div>
 
           <p class="form-foot">
-            题量暂不能在这里设置，题目由题库组题后确定；
-            布置班级与全年级只需选择其中一种填写。
+            总分默认按已选题目的分值求和，可手动调整；布置班级与全年级只需选择其中一种填写。
           </p>
 
           <div style="display: flex; justify-content: flex-end; margin-top: 4px;">
@@ -549,7 +580,10 @@ async function handleClose(hw: PublishedHomework) {
             </h3>
             <p class="dialog__sub">作业编号 {{ detail?.id ?? '—' }}</p>
           </div>
-          <button class="st-btn st-btn--ghost" @click="closeDetail">关闭</button>
+          <!-- 这里只是收起详情面板，写成「返回」：避免和「关闭作业（截止收题）」混淆 -->
+          <button class="st-btn st-btn--ghost" title="返回作业列表" @click="closeDetail">
+            <ArrowLeft :size="13" /> 返回
+          </button>
         </header>
 
         <div class="dialog__body">
@@ -632,7 +666,10 @@ async function handleClose(hw: PublishedHomework) {
                 <tbody>
                   <tr v-for="(row, i) in questionRows" :key="row.q.id">
                     <td class="cell-mono">{{ i + 1 }}</td>
-                    <td class="cell-content">{{ row.q.content || '—' }}</td>
+                    <td class="cell-content">
+                      <div v-if="row.q.shortTitle" class="q-short-title">{{ row.q.shortTitle }}</div>
+                      {{ row.q.content || '—' }}
+                    </td>
                     <td>
                       <span class="st-badge st-badge--outline">{{ row.q.typeName || `题型 ${row.q.type}` }}</span>
                     </td>
@@ -654,6 +691,28 @@ async function handleClose(hw: PublishedHomework) {
               </p>
             </div>
           </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- 从题库选题：与题库页共用同一个面板 -->
+    <div v-if="pickerVisible" class="overlay" @click.self="pickerVisible = false">
+      <div class="dialog">
+        <header class="dialog__head">
+          <div>
+            <h3 class="dialog__title">从题库选题</h3>
+            <p class="dialog__sub">按条件勾选或随机抽题，选中后带回作业表单</p>
+          </div>
+          <button class="st-btn st-btn--ghost" @click="pickerVisible = false">关闭</button>
+        </header>
+        <div class="dialog__body">
+          <QuestionPicker v-model="picked" :initial-chapter-id="formChapterId" />
+          <div class="pick-done">
+            <span class="pick-count">共选中 {{ picked.length }} 题 · 总分 {{ pickedScore }}</span>
+            <button class="st-btn st-btn--primary" :disabled="!picked.length" @click="pickerVisible = false">
+              完成
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -758,6 +817,95 @@ async function handleClose(hw: PublishedHomework) {
 .switch-text {
   font-size: 12.5px;
   color: var(--text-tertiary);
+}
+
+/* 从题库选题 */
+.pick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.pick-head .form-label {
+  margin-bottom: 0;
+}
+
+.pick-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pick-count {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.pick-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.pick-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pick-tag__x {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.pick-tag__x:hover {
+  color: var(--text-primary);
+}
+
+.pick-empty {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  align-self: center;
+}
+
+.pick-warn {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.pick-done {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .form-foot {
@@ -1016,6 +1164,12 @@ async function handleClose(hw: PublishedHomework) {
   word-break: break-word;
 }
 
+.q-short-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
 .cell-json {
   line-height: 1.6;
   word-break: break-word;
@@ -1061,27 +1215,3 @@ async function handleClose(hw: PublishedHomework) {
 }
 </style>
 
-<style>
-/* 章节树下拉浮层挂在 body 上，scoped 样式选不到；与 AI 备课页共用同一套黑白样式 */
-.chapter-tree-popper .el-tree-node__content {
-  border-radius: var(--radius-sm);
-}
-
-.chapter-tree-popper .el-tree-node__content:hover {
-  background: var(--bg-subtle);
-}
-
-.chapter-tree-popper .el-tree-node.is-current > .el-tree-node__content {
-  background: var(--bg-canvas);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.chapter-tree-popper .el-tree-node__expand-icon {
-  color: var(--text-tertiary);
-}
-
-.chapter-tree-popper .el-tree-node__expand-icon.is-leaf {
-  color: transparent;
-}
-</style>

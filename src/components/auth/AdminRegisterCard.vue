@@ -100,7 +100,7 @@ async function handleSubmit() {
       adminKey: form.value.adminKey.trim(),
     });
     if (!session?.token) {
-      apiError.value = '注册失败：后端未返回 token';
+      apiError.value = '注册失败：系统未返回登录凭证，请稍后重试';
       return;
     }
     // 替别人开号：新会话先暂存，不覆盖操作者当前会话
@@ -185,7 +185,7 @@ async function logoutAfterRegister() {
             class="field__input field__input--action"
             maxlength="32"
             autocomplete="new-password"
-            placeholder="6-32 位，后端加密存储"
+            placeholder="6-32 位，请妥善保管"
           />
           <button
             class="eye-btn"

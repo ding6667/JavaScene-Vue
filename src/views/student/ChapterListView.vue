@@ -123,7 +123,7 @@ onMounted(async () => {
   <div class="st-view">
     <header class="st-page-header">
       <h1 class="st-page-title">章节同步学习</h1>
-      <p class="st-page-subtitle">按《Java 程序设计基础》教材章节顺序学习 · 进度可上报后端</p>
+      <p class="st-page-subtitle">按《Java 程序设计基础》教材章节顺序学习 · 学习进度自动记录</p>
     </header>
 
     <!-- 进度概览：聚合自本章全部章节进度 -->
@@ -170,7 +170,7 @@ onMounted(async () => {
       </div>
       <div v-else-if="chapterRows.length === 0" class="st-empty" style="padding: 60px 16px;">
         <Layers :size="36" :stroke-width="1.2" class="st-empty__icon" />
-        <div class="st-empty__text">暂无章节数据（GET /api/knowledge/chapter/list 未返回记录）</div>
+        <div class="st-empty__text">暂无章节内容，换门课程试试</div>
       </div>
       <div v-else class="chapter-list">
         <div

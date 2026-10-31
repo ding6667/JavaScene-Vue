@@ -28,10 +28,10 @@ import {
   Trash2,
 } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import ChapterSelect from '@/components/ChapterSelect.vue';
 import {
   DEFAULT_COURSE_ID,
   deleteTextbookContent,
-  fetchChapters,
   fetchChapterTree,
   fetchKnowledgePoints,
   fetchTextbookContent,
@@ -39,6 +39,7 @@ import {
   saveKnowledgePoint,
   saveTextbookContent,
 } from '@/api/knowledge';
+import { useChapters } from '@/composables/useChapters';
 import type { Chapter, ChapterTreeNode, KnowledgePoint, TextbookContent } from '@/types/knowledge';
 
 /** 教材原文类型（后端 contentType 为整数码值） */
@@ -51,26 +52,16 @@ const CONTENT_TYPES = [
 
 const LEVEL_LABEL: Record<number, string> = { 1: '章', 2: '节', 3: '小节' };
 
-// ==================== 真实只读数据：章节列表 ====================
-const chapterLoading = ref(false);
-const chapters = ref<Chapter[]>([]);
+// ==================== 真实只读数据：章节列表（全站共享 useChapters） ====================
+const { chapters, findById: findChapter, load: loadChapterList } = useChapters();
 const selectedChapterId = ref<number | null>(null);
 
-const selectedChapter = computed(() =>
-  chapters.value.find((c) => c.id === selectedChapterId.value) ?? null,
-);
+const selectedChapter = computed(() => findChapter(selectedChapterId.value));
 
-async function loadChapters() {
-  chapterLoading.value = true;
-  try {
-    chapters.value = await fetchChapters();
-    if (!selectedChapterId.value && chapters.value.length) selectedChapterId.value = chapters.value[0].id;
-  } catch {
-    // 真实只读接口：失败提示由 axios 拦截器给出，保持空列表
-    chapters.value = [];
-  } finally {
-    chapterLoading.value = false;
-  }
+/** force 刷新：章节增删改后要让下拉与表格同时更新（共享数据源，其它页面也会同步） */
+async function loadChapters(force = false) {
+  await loadChapterList(force);
+  if (!selectedChapterId.value && chapters.value.length) selectedChapterId.value = chapters.value[0].id;
 }
 
 // ==================== 分区一：章节目录（已接桩 fetchChapterTree / saveChapter） ====================
@@ -194,7 +185,7 @@ async function handleDelete(row: TextbookContent) {
   try {
     await ElMessageBox.confirm(
       `将删除 ${row.chapterName || `章节 ${row.chapterId}`} 下的${contentTypeLabel(row)}原文，` +
-        '后端会逻辑删除并归档、同步移除 Dify 文档。确认继续？',
+        '删除后学生端将不再显示这段内容，且无法恢复。确认继续？',
       '删除教材原文',
       { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
     );
@@ -206,7 +197,7 @@ async function handleDelete(row: TextbookContent) {
     ElMessage.success('已提交删除');
     void loadContents();
   } catch {
-    ElMessage.error('删除失败，原因见上方提示（后端删除时会同步归档移除 Dify 文档）');
+    ElMessage.error('删除失败，原因见上方提示');
   }
 }
 
@@ -248,12 +239,6 @@ const DRAWER_TITLES: Record<DrawerMode, string> = {
   chapter: '章节维护',
   point: '知识点维护',
   content: '教材原文维护',
-};
-
-const DRAWER_PATHS: Record<DrawerMode, { fn: string; api: string }> = {
-  chapter: { fn: 'saveChapter', api: 'POST /api/knowledge/chapter/save' },
-  point: { fn: 'saveKnowledgePoint', api: 'POST /api/knowledge/point/save' },
-  content: { fn: 'saveTextbookContent', api: 'POST /api/knowledge/content/save' },
 };
 
 function resetForm() {
@@ -345,12 +330,13 @@ const canSubmit = computed(() => {
   return !!drawerForm.content.trim() && !!selectedChapterId.value;
 });
 
-/** 弹窗标题下的接口提示：保存会走哪个后端接口，出问题时便于定位 */
+/** 弹窗标题下的辅助说明：告诉用户保存后会在哪里生效 */
 const drawerHint = computed(() => {
   const mode = drawerMode.value;
   if (!mode) return '';
-  const { api } = DRAWER_PATHS[mode];
-  return `提交到 @/api/knowledge · ${api}`;
+  if (mode === 'chapter') return '保存后章节树与章节下拉会立即更新';
+  if (mode === 'point') return '保存后本章知识点列表会立即更新';
+  return '保存后学生端即可看到这段内容';
 });
 
 /** 保存（已接桩：saveChapter / saveKnowledgePoint / saveTextbookContent） */
@@ -401,7 +387,7 @@ async function submitDrawer() {
     ElMessage.success(`${DRAWER_TITLES[mode]}已提交保存`);
     closeDrawer();
     if (mode === 'chapter') {
-      void loadChapters();
+      void loadChapters(true);
       void loadTree();
     } else if (mode === 'point') {
       void loadPoints();
@@ -440,10 +426,8 @@ onMounted(() => {
     <div class="km-notice">
       <Info :size="14" />
       <span>
-        本页三个分区已按 @/api/knowledge 的桩函数接通：章节树 fetchChapterTree、章节保存 saveChapter、
-        知识点 fetchKnowledgePoints / saveKnowledgePoint、原文 fetchTextbookContent / saveTextbookContent /
-        deleteTextbookContent。加载失败时各区显示错误空态，可用「重新加载」重试；
-        顶部章节下拉与父级选项来自已对接的 GET /api/knowledge/chapter/list。
+        本页包含三个分区：章节目录、知识点与教材原文，保存后立即作为答疑、出题与批改的依据。
+        某个分区加载失败时，可以点该区的「重新加载」重试。
       </span>
     </div>
 
@@ -452,15 +436,12 @@ onMounted(() => {
       <div class="st-card__body toolbar-row">
         <div class="field">
           <label class="field-label">教材章节</label>
-          <el-select
+          <ChapterSelect
             v-model="selectedChapterId"
             placeholder="选择章节"
             style="width: 260px;"
-            :loading="chapterLoading"
             @change="onChapterChange"
-          >
-            <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode} ${c.title}`" :value="c.id" />
-          </el-select>
+          />
         </div>
         <div class="field">
           <label class="field-label">原文类型</label>
@@ -490,11 +471,7 @@ onMounted(() => {
         <BookOpen :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">一、章节目录</h2>
-          <p class="st-card__hint">
-            已对接 @/api/knowledge.fetchChapterTree（GET /api/knowledge/chapter/tree?courseId=）·
-            saveChapter（POST /api/knowledge/chapter/save
-            {id,courseId,parentId,chapterCode,title,level,sortOrder,description,summary}）
-          </p>
+          <p class="st-card__hint">按「章 → 节 → 小节」维护课程结构，可新增、编辑与排序</p>
         </div>
         <div class="block-ops">
           <button class="st-text-btn" :disabled="treeLoading" @click="loadTree">
@@ -513,9 +490,7 @@ onMounted(() => {
         <div v-else-if="treeError" class="st-empty">
           <BookOpen :size="36" :stroke-width="1.2" class="st-empty__icon" />
           <div class="st-empty__text">{{ treeError }}</div>
-          <div class="st-empty__text km-sub">
-            下表数据来自已对接的章节列表（GET /api/knowledge/chapter/list），仍可直接维护
-          </div>
+          <div class="st-empty__text km-sub">章节树暂时加载失败，下表仍可直接维护</div>
         </div>
         <table v-if="!treeLoading" class="km-table">
           <thead>
@@ -550,7 +525,7 @@ onMounted(() => {
               <td style="text-align: right; white-space: nowrap;">
                 <button
                   class="st-text-btn"
-                  title="章节树未实现时按列表行编辑，parentId 由章节列表取值"
+                  title="编辑该章节"
                   @click="editChapterFromList(c)"
                 >
                   <Pencil :size="12" style="vertical-align: -2px;" /> 编辑
@@ -571,11 +546,7 @@ onMounted(() => {
         <Layers :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">二、知识点</h2>
-          <p class="st-card__hint">
-            已对接 @/api/knowledge.fetchKnowledgePoints（GET /api/knowledge/point/list?chapterId=）·
-            saveKnowledgePoint（POST /api/knowledge/point/save
-            {id,chapterId,name,description,difficulty,keyword,pageRef,pageOrder}）
-          </p>
+          <p class="st-card__hint">为当前章节补充知识点、难度与教材页码，方便检索与出题</p>
         </div>
         <div class="block-ops">
           <button class="st-text-btn" :disabled="pointsLoading || !selectedChapterId" @click="loadPoints">
@@ -639,16 +610,11 @@ onMounted(() => {
         <FileText :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">三、教材原文</h2>
-          <p class="st-card__hint">
-            已对接 @/api/knowledge.fetchTextbookContent（GET /api/knowledge/content/list
-            ?chapterId&contentType&keyword&pageNum&pageSize）· saveTextbookContent（POST /api/knowledge/content/save
-            {id,chapterId,knowledgePointId,contentType,content,page,pageOrder,syncDify}）·
-            deleteTextbookContent（PUT /api/knowledge/content/delete?id=）
-          </p>
+          <p class="st-card__hint">原文片段是答疑与出题的依据，可按类型、关键词筛选后维护</p>
         </div>
         <div class="block-ops">
-          <label class="sync-switch" title="新增原文时是否默认写入 Dify 知识库，可在表单里单独调整">
-            <span>同步 Dify</span>
+          <label class="sync-switch" title="新增原文时是否默认写入知识库，可在表单里单独调整">
+            <span>同步知识库</span>
             <el-switch v-model="syncDifyDefault" size="small" />
           </label>
           <button class="st-text-btn" :disabled="contentsLoading || !selectedChapterId" @click="loadContents">
@@ -676,7 +642,7 @@ onMounted(() => {
                 <th>原文内容</th>
                 <th style="width: 120px;">知识点</th>
                 <th style="width: 80px;">页码</th>
-                <th style="width: 100px;">Dify 文档</th>
+                <th style="width: 100px;">知识库文档</th>
                 <th style="width: 170px; text-align: right;">操作</th>
               </tr>
             </thead>
@@ -744,57 +710,58 @@ onMounted(() => {
               <!-- 章节字段 -->
               <template v-if="drawerMode === 'chapter'">
                 <div class="form-row">
-                  <div class="form-item"><label class="form-label">章节编号 chapterCode</label><input v-model="drawerForm.chapterCode" class="form-input" placeholder="如：03" /></div>
+                  <div class="form-item"><label class="form-label">章节编号</label><input v-model="drawerForm.chapterCode" class="form-input" placeholder="如：03" /></div>
                   <div class="form-item form-item--sm">
-                    <label class="form-label">层级 level</label>
+                    <label class="form-label">层级</label>
                     <el-select v-model="drawerForm.level" style="width: 100%;">
                       <el-option :value="1" label="1 · 章" />
                       <el-option :value="2" label="2 · 节" />
                       <el-option :value="3" label="3 · 小节" />
                     </el-select>
                   </div>
-                  <div class="form-item form-item--sm"><label class="form-label">排序 sortOrder</label><el-input-number v-model="drawerForm.sortOrder" :min="1" style="width: 100%;" /></div>
+                  <div class="form-item form-item--sm"><label class="form-label">排序</label><el-input-number v-model="drawerForm.sortOrder" :min="1" style="width: 100%;" /></div>
                 </div>
-                <div class="form-item"><label class="form-label">标题 title</label><input v-model="drawerForm.title" class="form-input" placeholder="章节标题" /></div>
+                <div class="form-item"><label class="form-label">标题</label><input v-model="drawerForm.title" class="form-input" placeholder="章节标题" /></div>
                 <div class="form-row">
                   <div class="form-item">
-                    <label class="form-label">父级章节 parentId</label>
-                    <el-select v-model="drawerForm.parentId" style="width: 100%;">
-                      <el-option :value="0" label="顶级（parentId = 0）" />
-                      <el-option
-                        v-for="c in chapters.filter((x) => x.level === 1 && x.id !== editingId)"
-                        :key="c.id"
-                        :value="c.id"
-                        :label="`${c.chapterCode} ${c.title}`"
-                      />
-                    </el-select>
+                    <label class="form-label">父级章节</label>
+                    <ChapterSelect
+                      v-model="drawerForm.parentId"
+                      :levels="[1]"
+                      :exclude-ids="editingId === null ? [] : [editingId]"
+                      allow-all
+                      all-label="顶级章节"
+                      :all-value="0"
+                      placeholder="选择上级章节"
+                      style="width: 100%;"
+                    />
                   </div>
                   <div class="form-item form-item--sm">
-                    <label class="form-label">课程 courseId</label>
+                    <label class="form-label">课程</label>
                     <input :value="DEFAULT_COURSE_ID" class="form-input" readonly />
                   </div>
                 </div>
-                <div class="form-item"><label class="form-label">说明 description</label><textarea v-model="drawerForm.description" class="form-textarea" rows="3" /></div>
-                <div class="form-item"><label class="form-label">摘要 summary</label><textarea v-model="drawerForm.summary" class="form-textarea" rows="3" /></div>
+                <div class="form-item"><label class="form-label">说明</label><textarea v-model="drawerForm.description" class="form-textarea" rows="3" /></div>
+                <div class="form-item"><label class="form-label">摘要</label><textarea v-model="drawerForm.summary" class="form-textarea" rows="3" /></div>
               </template>
 
               <!-- 知识点字段 -->
               <template v-else-if="drawerMode === 'point'">
                 <div class="form-row">
-                  <div class="form-item"><label class="form-label">知识点名称 name</label><input v-model="drawerForm.name" class="form-input" /></div>
+                  <div class="form-item"><label class="form-label">知识点名称</label><input v-model="drawerForm.name" class="form-input" /></div>
                   <div class="form-item form-item--sm">
-                    <label class="form-label">难度 difficulty</label>
+                    <label class="form-label">难度</label>
                     <el-select v-model="drawerForm.difficulty" style="width: 100%;">
                       <el-option v-for="d in 5" :key="d" :value="d" :label="`${d} 级`" />
                     </el-select>
                   </div>
-                  <div class="form-item form-item--sm"><label class="form-label">排序 pageOrder</label><el-input-number v-model="drawerForm.pageOrder" :min="1" style="width: 100%;" /></div>
+                  <div class="form-item form-item--sm"><label class="form-label">排序</label><el-input-number v-model="drawerForm.pageOrder" :min="1" style="width: 100%;" /></div>
                 </div>
                 <div class="form-row">
-                  <div class="form-item"><label class="form-label">关键词 keyword</label><input v-model="drawerForm.pointKeyword" class="form-input" placeholder="用于检索召回" /></div>
-                  <div class="form-item form-item--sm"><label class="form-label">教材页码 pageRef</label><input v-model="drawerForm.pageRef" class="form-input" placeholder="如：P45-P48" /></div>
+                  <div class="form-item"><label class="form-label">关键词</label><input v-model="drawerForm.pointKeyword" class="form-input" placeholder="用于检索召回" /></div>
+                  <div class="form-item form-item--sm"><label class="form-label">教材页码</label><input v-model="drawerForm.pageRef" class="form-input" placeholder="如：P45-P48" /></div>
                 </div>
-                <div class="form-item"><label class="form-label">描述 description</label><textarea v-model="drawerForm.description" class="form-textarea" rows="4" /></div>
+                <div class="form-item"><label class="form-label">描述</label><textarea v-model="drawerForm.description" class="form-textarea" rows="4" /></div>
                 <div class="form-item km-sub">
                   <label class="form-label">归属章节</label>
                   <p class="form-static">
@@ -807,26 +774,26 @@ onMounted(() => {
               <template v-else>
                 <div class="form-row">
                   <div class="form-item form-item--sm">
-                    <label class="form-label">原文类型 contentType</label>
+                    <label class="form-label">原文类型</label>
                     <el-select v-model="drawerForm.contentType" style="width: 100%;">
                       <el-option v-for="t in CONTENT_TYPES" :key="t.value" :label="`${t.value} · ${t.label}`" :value="t.value" />
                     </el-select>
                   </div>
                   <div class="form-item">
-                    <label class="form-label">关联知识点 knowledgePointId</label>
+                    <label class="form-label">关联知识点</label>
                     <el-select v-model="drawerForm.knowledgePointId" placeholder="可不关联" clearable style="width: 100%;">
                       <el-option v-for="p in points" :key="p.id" :label="p.name" :value="p.id" />
                     </el-select>
                   </div>
-                  <div class="form-item form-item--sm"><label class="form-label">页码 page</label><el-input-number v-model="drawerForm.page" :min="1" style="width: 100%;" /></div>
-                  <div class="form-item form-item--sm"><label class="form-label">排序 pageOrder</label><el-input-number v-model="drawerForm.pageOrder" :min="1" style="width: 100%;" /></div>
+                  <div class="form-item form-item--sm"><label class="form-label">页码</label><el-input-number v-model="drawerForm.page" :min="1" style="width: 100%;" /></div>
+                  <div class="form-item form-item--sm"><label class="form-label">排序</label><el-input-number v-model="drawerForm.pageOrder" :min="1" style="width: 100%;" /></div>
                 </div>
-                <div class="form-item"><label class="form-label">原文内容 content</label><textarea v-model="drawerForm.content" class="form-textarea" rows="8" placeholder="教材原文片段（将作为答疑与出题依据）"></textarea></div>
+                <div class="form-item"><label class="form-label">原文内容</label><textarea v-model="drawerForm.content" class="form-textarea" rows="8" placeholder="教材原文片段（将作为答疑与出题依据）"></textarea></div>
                 <div class="form-item">
-                  <label class="form-label">同步至 Dify 知识库 syncDify</label>
+                  <label class="form-label">同步至知识库</label>
                   <el-switch v-model="drawerForm.syncDify" />
                   <span class="form-static" style="margin-left: 12px;">
-                    {{ drawerForm.syncDify ? '保存后由后端切片并向量化写入 Dify' : '仅写业务库，不进 Dify 索引' }}
+                    {{ drawerForm.syncDify ? '保存后会自动切分并写入知识库' : '只保存在本系统，不写入知识库' }}
                   </span>
                 </div>
                 <div class="form-item km-sub">

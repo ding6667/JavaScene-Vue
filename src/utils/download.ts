@@ -33,6 +33,20 @@ export async function isBlankDocx(blob: Blob): Promise<boolean> {
   return documentSize < 1600;
 }
 
+/**
+ * 判断下载到的课件是不是不可用的 .pptx。
+ *
+ * 下载接口在有 pptx_md、文件还没转出来时会现场生成，慢的时候后端可能回一坨 JSON / HTML；
+ * 这些内容被当成 Blob 存成 .pptx 用户打不开，所以落盘前先认一下 ZIP 魔数与 ppt/presentation.xml。
+ * 是 ZIP 但读不到条目时按可用处理，避免误伤正常文件。
+ */
+export async function isBlankPptx(blob: Blob): Promise<boolean> {
+  if (blob.size < 1024) return true;
+  const head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+  if (head[0] !== 0x50 || head[1] !== 0x4b) return true; // 不是 ZIP（多为 JSON/HTML 错误页）
+  return (await readZipEntrySize(blob, 'ppt/presentation.xml')) == null;
+}
+
 /** 读取 ZIP 中央目录中指定条目的解压后大小（字节） */
 async function readZipEntrySize(blob: Blob, entryName: string): Promise<number | null> {
   try {

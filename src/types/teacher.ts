@@ -89,12 +89,26 @@ export interface HomeworkGenerateConfig {
 
 // ==================== 作业 ====================
 
+/** 发布作业时带上的题目：数组顺序即题目顺序 */
+export interface HomeworkPublishQuestion {
+  questionId: number;
+  /** 本题分值；不传则用题库里该题的默认分值 */
+  score?: number;
+  /** 来源：1=教材习题生成 2=AI生成 3=人工录入，默认 3 */
+  sourceType?: number;
+}
+
 /** POST /api/teach/homework/publish 请求体 */
 export interface HomeworkPublishRequest {
   title: string;
   /** 作业要求正文 */
   content: string;
   chapterId: number;
+  /**
+   * 随作业一起建题关联；后端在同一事务里写两张表。
+   * 不传或空数组 = 只建作业、不挂题。
+   */
+  questions?: HomeworkPublishQuestion[];
   /** 截止时间 */
   deadline: string;
   /** 指定班级发布时必填（与 grade 二选一） */
@@ -103,7 +117,7 @@ export interface HomeworkPublishRequest {
   grade?: string;
   /** 是否允许迟交：0=否 1=是，默认 0 */
   allowLateSubmit?: number;
-  /** 作业总分，默认 0 */
+  /** 作业总分；带 questions 时后端按题目分值汇总覆盖，不必再传 */
   totalScore?: number;
 }
 
@@ -148,12 +162,17 @@ export interface HomeworkQuestionSnapshot {
   questionId: number;
   sourceType: number;
   content: string;
+  /** 一话题名；作业快照里后端已补，为空时列表回退题干 */
+  shortTitle?: string | null;
+  /** 渲染参数（选择 choiceMode / 填空 blankCount），老快照由后端按题型兜底 */
+  renderConfig?: { choiceMode?: 'single' | 'multiple'; blankCount?: number } | null;
   type: number;
   typeName: string;
   options: string;
   answer: string;
   analysis: string;
-  difficulty: number;
+  /** 难度名称（简单/进阶/拔高），后端直接下发字符串 */
+  difficulty: string;
   chapterId: number;
   knowledgePoints: string;
   defaultScore: number;
@@ -253,8 +272,10 @@ export interface PrepareRecordItem {
   hasKeyPoints: boolean;
   hasHomework: boolean;
   hasLab: boolean;
-  /** 是否已生成 PPT 文件，决定"下载 PPT"是否可用 */
+  /** .pptx 文件是否已产出（异步转换结果，不决定入口显隐） */
   hasPpt: boolean;
+  /** pptx_md 是否有正文：只要有正文就算「有 PPT」，文件可能仍在异步转换 */
+  hasPptMd: boolean;
 }
 
 /** GET /api/teach/prepare/record/list 分页数据（注意页码字段是 pageNum，不是 current） */

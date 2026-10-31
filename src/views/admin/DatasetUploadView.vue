@@ -18,23 +18,18 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { CloudUpload, FileText, History, Info, Search, TextCursorInput } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import ChapterSelect from '@/components/ChapterSelect.vue';
 import {
-  fetchChapters,
   fetchDatasetUploadList,
   updateDatasetMetadata,
   uploadDatasetFile,
   uploadDatasetText,
 } from '@/api/knowledge';
+import { useChapters } from '@/composables/useChapters';
 import type { DatasetUploadRecord } from '@/types/knowledge';
 
 /** ID 一律按字符串比对：knowledge_* 主键是雪花 ID，转 number 会丢精度 */
 type RowId = number | string;
-
-interface ChapterOption {
-  id: RowId;
-  title: string;
-  code: string;
-}
 
 /** 列表行视图模型：字段来自后端 DatasetUploadRecord，只做展示层改名 */
 interface UploadRecord {
@@ -79,8 +74,9 @@ const POLL_MAX_TIMES = 110;
 const uploadMode = ref<'file' | 'text'>('file');
 
 // ---- 章节下拉 ----
-const chapterOptions = ref<ChapterOption[]>([]);
 const uploadChapterId = ref<RowId | null>(null);
+/** 章节下拉数据（全站共享） */
+const { load: loadChapters } = useChapters();
 
 // ---- 文件上传入口（要留原始 File，不能只存名字） ----
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -132,12 +128,8 @@ const canSubmit = computed(() => {
 });
 
 onMounted(async () => {
-  try {
-    const list = await fetchChapters();
-    chapterOptions.value = list.map((c) => ({ id: c.id, title: c.title, code: c.chapterCode }));
-  } catch {
-    chapterOptions.value = [];
-  }
+  // 章节数据由 useChapters 统一缓存，<ChapterSelect> 内部也会加载
+  void loadChapters();
   await loadRecords();
 });
 
@@ -289,13 +281,13 @@ async function handleUpload() {
  */
 async function handleMetadata(row: UploadRecord) {
   if (!row.documentId) {
-    ElMessage.warning('该记录还没有 Dify 文档ID（可能入库失败），无法修正元数据');
+    ElMessage.warning('这条记录还没有生成知识库文档（可能入库失败），无法修正元数据');
     return;
   }
   let text: string;
   try {
     const input = await ElMessageBox.prompt(
-      `目标文档：${row.documentName}<br/>元数据键值会追加写入 Dify（如 chapter_id / chapter_name / page）`,
+      `目标文档：${row.documentName}<br/>元数据键值会追加写入该知识库文档（如 chapter_id / chapter_name / page）`,
       '修正文档元数据',
       {
         inputValue: JSON.stringify({ chapter_id: String(row.chapterId) }),
@@ -347,12 +339,10 @@ function fmtTime(value: string): string {
     <div class="du-notice">
       <Info :size="14" />
       <span>
-        上传接口是<b>异步受理</b>：返回 <code>{success, recordId, status:0}</code> 只代表后端已登记任务，
-        <b>受理成功不等于入库成功</b>。本页会在提交后凭 recordId 每 3 秒回查
-        <code>GET /api/knowledge/dataset/upload/list</code>（status 0=处理中 1=成功 2=失败，
-        失败原因 <code>errorMsg</code> 只在列表里返回）。后端索引最长等 5 分钟，
-        空壳（切分 0 段）、报错、超时三种情况后端会自动把异常文档从知识库删掉，无需人工清理。
-        教师只能看到自己的记录，管理员可查全部。
+        上传是<b>异步处理</b>的：提交成功只表示任务已受理，<b>受理成功不等于入库成功</b>。
+        提交后本页每 3 秒自动刷新一次状态（处理中 / 成功 / 失败），失败原因在记录里可以看到。
+        索引最长需要等 5 分钟；切分不出内容、处理报错或超时的文档会被自动清理，无需人工处理。
+        教师只能看到自己上传的记录，管理员可以查看全部。
       </span>
     </div>
 
@@ -376,30 +366,17 @@ function fmtTime(value: string): string {
       <div class="st-card__body">
         <div class="form-row">
           <div class="form-item">
-            <label class="form-label">挂载章节 chapterId</label>
-            <el-select
-              v-model="uploadChapterId"
-              placeholder="选择章节"
-              style="width: 100%;"
-              filterable
-              no-data-text="章节数据加载失败"
-            >
-              <el-option
-                v-for="c in chapterOptions"
-                :key="String(c.id)"
-                :label="`${c.code} ${c.title}`"
-                :value="c.id"
-              />
-            </el-select>
+            <label class="form-label">挂载章节</label>
+            <ChapterSelect v-model="uploadChapterId" placeholder="选择章节" style="width: 100%;" />
           </div>
           <div class="form-item form-item--sm">
-            <label class="form-label">内容类型 contentType</label>
+            <label class="form-label">内容类型</label>
             <el-select v-model="textForm.contentType" :disabled="uploadMode === 'file'" style="width: 100%;">
               <el-option v-for="t in CONTENT_TYPES" :key="t.value" :value="t.value" :label="t.label" />
             </el-select>
           </div>
           <div class="form-item form-item--sm">
-            <label class="form-label">起始页码 page</label>
+            <label class="form-label">起始页码</label>
             <el-input-number v-model="textForm.page" :min="0" :disabled="uploadMode === 'file'" style="width: 100%;" />
           </div>
         </div>
@@ -417,12 +394,12 @@ function fmtTime(value: string): string {
         <!-- 文本入口 -->
         <template v-else>
           <div class="form-item">
-            <label class="form-label">文档名称 documentName</label>
+            <label class="form-label">文档名称</label>
             <input v-model="textForm.documentName" class="form-input" placeholder="如：第三章 面向对象" />
           </div>
           <div class="form-item">
-            <label class="form-label">原文内容 content</label>
-            <textarea v-model="textForm.content" class="form-textarea" rows="6" placeholder="粘贴教材原文片段，提交后由后端切分并向量化"></textarea>
+            <label class="form-label">原文内容</label>
+            <textarea v-model="textForm.content" class="form-textarea" rows="6" placeholder="粘贴教材原文片段，提交后会自动切分并写入知识库"></textarea>
           </div>
         </template>
 
@@ -452,7 +429,7 @@ function fmtTime(value: string): string {
           <input
             v-model="filter.recordId"
             class="search-input"
-            placeholder="按 recordId 追溯"
+            placeholder="按任务编号搜索"
             @keyup.enter="handleQuery"
           />
         </div>

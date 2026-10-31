@@ -2,110 +2,69 @@
 /**
  * 题库管理
  *
- * 已对接：
- * - @/api/exam.fetchQuestionAdminList   GET    /api/exam/question/admin/list?chapterId&type&difficulty&keyword&pageNum&pageSize
- * - @/api/exam.fetchQuestionAdminDetail GET    /api/exam/question/admin/{id}（编辑抽屉回显）
- * - @/api/exam.createQuestion           POST   /api/exam/question/admin/save
- * - @/api/exam.updateQuestion           PUT    /api/exam/question/admin/update（请求体必须带 id）
- * - @/api/exam.deleteQuestion           DELETE /api/exam/question/admin/delete/{id}
- * - @/api/exam.randomQuestions          POST   /api/exam/question/admin/random
- * - @/api/exam.generateQuestions        POST   /api/exam/question/generate（只回批次号，异步落库，成功后自动重查列表）
- * - @/api/knowledge.fetchChapters       GET    /api/knowledge/chapter/list?courseId（章节下拉数据源）
+ * 用到的接口：
+ * - GET    /api/exam/question/admin/list        题目分页（章节 / 题型 / 难度配置 / 关键字）
+ * - GET    /api/exam/question/admin/{id}        题目详情（编辑回显，返回数据库实体）
+ * - POST   /api/exam/question/admin/save        新增题目
+ * - PUT    /api/exam/question/admin/update      修改题目（请求体带 id）
+ * - DELETE /api/exam/question/admin/delete/{id} 删除题目
+ * - POST   /api/exam/difficulty-config/list     难度档位（下拉数据源，前端不写死）
+ * - POST   /api/exam/question/generate          AI 出题（data 1=已受理 0=失败，异步落库）
+ * - GET    /api/knowledge/chapter/list          章节下拉数据源
+ * 抽题走选题面板组件（/api/exam/question/admin/random，按题型 + 难度档配比）。
  *
- * 码值口径与后端枚举一致：题型 1=选择 2=填空 3=判断 4=程序阅读 5=编程 6=简答；
- * 难度 1=基础 2=进阶 3=拔高；判题方式 1=AI批改 2=测试用例判题 3=混合。
- * 列表接口的 type/difficulty 返回码值，详情/随机抽题返回中文描述，labelOf() 两种口径都兼容。
+ * 码值口径：题型 1=选择 2=填空 3=判断 4=程序阅读 5=编程 6=简答；判题方式 1=AI批改 2=用例判题 3=混合；
+ * 难度不再是码值，一律用 difficultyConfigId + difficultyName。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import {
   AlertTriangle,
   ClipboardList,
-  Database,
   Layers,
   Loader2,
   Pencil,
   Plus,
   RefreshCw,
   Search,
+  Send,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import ChapterSelect from '@/components/ChapterSelect.vue';
+import QuestionPicker from '@/components/teacher/QuestionPicker.vue';
 import {
   createQuestion,
   deleteQuestion,
   fetchQuestionAdminDetail,
   fetchQuestionAdminList,
   generateQuestions,
-  randomQuestions,
   updateQuestion,
 } from '@/api/exam';
-import { fetchChapters } from '@/api/knowledge';
-import type { Chapter } from '@/types/knowledge';
-import type { JudgeTestCase, QuestionAdminItem, QuestionSaveRequest } from '@/types/exam';
+import { fetchClasses } from '@/api/class';
+import { publishHomework } from '@/api/teacher';
+import type { ClassResponse } from '@/types/class';
+import type { JudgeTestCase, QuestionAdminItem, QuestionAnswer, QuestionSaveRequest } from '@/types/exam';
+import { useChapters } from '@/composables/useChapters';
+import { useDifficultyConfigs } from '@/composables/useDifficultyConfigs';
+import { defaultDeadline } from '@/utils/datetime';
+import {
+  COGNITIVE_OPTIONS,
+  JUDGE_MODE_LABELS,
+  TYPE_LABELS,
+  codeFrom,
+  toEntries,
+  typeLabel,
+} from '@/utils/questionCode';
 
-// ==================== 码值映射表（与后端枚举一致） ====================
-
-/** 题型：后端 type 为整数编码 1~6 */
-const TYPE_LABELS: Record<number, string> = {
-  1: '选择题',
-  2: '填空题',
-  3: '判断题',
-  4: '程序阅读题',
-  5: '编程题',
-  6: '简答题',
-};
-
-/** 难度：1=基础 2=进阶 3=拔高 */
-const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '基础',
-  2: '进阶',
-  3: '拔高',
-};
-
-/** 认知层级：后端为中文描述（如“理解”） */
-const COGNITIVE_OPTIONS = ['记忆', '理解', '应用', '分析', '评价', '创造'];
-
-/** 判题方式：1=AI批改 2=测试用例判题 3=混合 */
-const JUDGE_MODE_LABELS: Record<number, string> = {
-  1: 'AI 批改',
-  2: '测试用例判题',
-  3: '混合',
-};
+// ==================== 下拉选项（码值映射见 utils/questionCode） ====================
 
 const QUESTION_TYPE_OPTIONS = toEntries(TYPE_LABELS);
-const DIFFICULTY_OPTIONS = toEntries(DIFFICULTY_LABELS);
+const difficultyStore = useDifficultyConfigs();
+const difficultyOptions = difficultyStore.options;
+const difficultyText = difficultyStore.difficultyText;
 const JUDGE_MODE_OPTIONS = toEntries(JUDGE_MODE_LABELS);
-
-function toEntries(map: Record<number, string>) {
-  return Object.entries(map).map(([k, v]) => ({ value: Number(k), label: v }));
-}
-
-/** 码值 → 中文；后端回中文（string）时原样展示，不做二次猜测 */
-function labelOf(map: Record<number, string>, raw: string | number | null | undefined): string {
-  const text = String(raw ?? '').trim();
-  if (!text) return '—';
-  const n = Number(text);
-  if (Number.isFinite(n) && map[n]) return map[n];
-  return text;
-}
-
-const typeLabel = (raw: string | number | null | undefined) => labelOf(TYPE_LABELS, raw);
-const difficultyLabel = (raw: string | number | null | undefined) => labelOf(DIFFICULTY_LABELS, raw);
-
-/**
- * 回显方向：码值或中文标签 → 码值（编辑抽屉的下拉是码值）。
- * 映射不到就退回默认值，避免把后端文本写进 number 字段。
- */
-function codeFrom(map: Record<number, string>, raw: string | number | null | undefined, fallback: number): number {
-  const text = String(raw ?? '').trim();
-  if (!text) return fallback;
-  const n = Number(text);
-  if (Number.isFinite(n) && map[n]) return n;
-  const hit = Object.entries(map).find(([, label]) => label === text);
-  return hit ? Number(hit[0]) : fallback;
-}
 
 /** 认知层级：后端是中文描述，兼容历史码值 */
 function cognitiveText(raw: string | number | null | undefined): string {
@@ -125,29 +84,30 @@ function ratePercent(value: number | null | undefined): string {
   return `${Math.max(0, Math.min(100, Math.round(n)))}%`;
 }
 
-/** 统一渲染接口错误文案 */
-function apiErrorText(fn: string, e: unknown): string {
+/** 统一的失败提示：只给用户看「做什么失败了 + 后端原因」，不出现接口名 */
+function apiErrorText(action: string, e: unknown): string {
   const msg = (e as Error)?.message ?? '';
-  return msg ? `接口调用失败：${fn}（${msg}）` : `接口调用失败：${fn}`;
+  return msg ? `${action}：${msg}` : action;
 }
 
-// ==================== 章节下拉（真实接口） ====================
-const chapters = ref<Chapter[]>([]);
-const chaptersError = ref('');
-
-async function loadChapters() {
-  try {
-    chapters.value = await fetchChapters();
-    chaptersError.value = '';
-  } catch (e) {
-    chapters.value = [];
-    chaptersError.value = `章节加载失败：${(e as Error)?.message ?? '未知错误'}`;
-  }
-}
+// ==================== 章节 ====================
+/** 章节列表与下拉统一走 useChapters / <ChapterSelect> */
+const { error: chaptersError, findById: findChapter, load: loadChapters } = useChapters();
 
 const chapterTitle = (id: number | null | undefined) => {
   if (id == null) return '未分配章节';
-  return chapters.value.find((c) => c.id === Number(id))?.title ?? `章节 ${id}`;
+  return findChapter(id)?.title ?? `章节 ${id}`;
+};
+
+/**
+ * 表格「章节」列：编号 + 名称一起展示（如「03 函数与递归」）。
+ * 题库里同名章节并不少见，只看名称无法区分是哪一章，编号才是唯一可辨识的定位。
+ */
+const chapterLabel = (id: number | null | undefined) => {
+  if (id == null) return '未分配章节';
+  const chapter = findChapter(id);
+  if (!chapter) return `章节 ${id}`;
+  return chapter.chapterCode ? `${chapter.chapterCode} ${chapter.title}` : chapter.title;
 };
 
 // ==================== 列表 + 筛选 ====================
@@ -156,7 +116,7 @@ const filters = reactive({
   /** 0 = 全部题型（作为查询参数时转 undefined） */
   type: 0,
   /** 0 = 全部难度 */
-  difficulty: 0,
+  difficultyConfigId: 0,
   keyword: '',
 });
 
@@ -178,7 +138,7 @@ async function loadList() {
     const res = await fetchQuestionAdminList({
       chapterId: filters.chapterId ?? undefined,
       type: filters.type || undefined,
-      difficulty: filters.difficulty || undefined,
+      difficultyConfigId: filters.difficultyConfigId || undefined,
       keyword: filters.keyword.trim() || undefined,
       pageNum: page.value,
       pageSize: size.value,
@@ -190,7 +150,7 @@ async function loadList() {
   } catch (e) {
     records.value = [];
     total.value = 0;
-    listError.value = apiErrorText('@/api/exam.fetchQuestionAdminList', e);
+    listError.value = apiErrorText('题目列表加载失败', e);
   } finally {
     listLoading.value = false;
   }
@@ -216,10 +176,22 @@ function reloadAll() {
 interface DrawerForm {
   id: number | null;
   content: string;
+  /** 一话题名（≤100 字），列表/卡片优先展示 */
+  shortTitle: string;
   type: number;
-  /** 一行一个选项，也可直接粘 JSON 数组；提交时序列化为 JSON 字符串 */
-  options: string;
-  /** 参考答案；合法 JSON 原样规范化，纯文本包成 JSON 字符串，多选按逗号切数组 */
+  /** 选择题：单选 / 多选，提交到 renderConfig.choiceMode */
+  choiceMode: 'single' | 'multiple';
+  /** 填空题空数，提交到 renderConfig.blankCount */
+  blankCount: number;
+  /** 选择题选项：逐条输入，提交时转成字符串数组 */
+  options: string[];
+  /** 选择题答案：选项字母，多选可以选多个 */
+  answerLetters: string[];
+  /** 判断题答案：正确 / 错误（提交时转成布尔值） */
+  judgeAnswer: '正确' | '错误' | '';
+  /** 填空题答案：按空顺序，一个空一条 */
+  blanks: string[];
+  /** 文本答案：程序阅读题存程序输出，编程题/简答题存参考答案 */
   answer: string;
   analysis: string;
   /** 一行一条 */
@@ -227,18 +199,22 @@ interface DrawerForm {
   codeFramework: string;
   /** 一行一条 */
   hints: string;
-  /** 逗号分隔的知识点 ID */
-  knowledgePointIds: string;
   solutionOutline: string;
   weight: number;
   judgeMode: number;
   /** JudgeTestCase[] 的 JSON 文本 */
   testCases: string;
   chapterId: number | null;
-  difficulty: number;
+  difficultyConfigId: number;
   score: number;
   cognitiveLevel: string;
 }
+
+/** 选项数量范围：太少不像选择题，太多没有意义 */
+const OPTION_MIN = 2;
+const OPTION_MAX = 8;
+/** 新建选择题时先摆 4 个空位 */
+const DEFAULT_OPTIONS = ['', '', '', ''];
 
 const drawerVisible = ref(false);
 const drawerMode = ref<'create' | 'edit'>('create');
@@ -249,20 +225,25 @@ const saving = ref(false);
 const form = reactive<DrawerForm>({
   id: null,
   content: '',
+  shortTitle: '',
   type: 1,
-  options: '',
+  choiceMode: 'single',
+  blankCount: 1,
+  options: [...DEFAULT_OPTIONS],
+  answerLetters: [],
+  judgeAnswer: '',
+  blanks: [''],
   answer: '',
   analysis: '',
   requirements: '',
   codeFramework: '',
   hints: '',
-  knowledgePointIds: '',
   solutionOutline: '',
   weight: 1,
   judgeMode: 1,
   testCases: '',
   chapterId: null,
-  difficulty: 2,
+  difficultyConfigId: 0,
   score: 5,
   cognitiveLevel: '理解',
 });
@@ -270,60 +251,177 @@ const form = reactive<DrawerForm>({
 function resetForm() {
   form.id = null;
   form.content = '';
+  form.shortTitle = '';
   form.type = 1;
-  form.options = '';
+  form.choiceMode = 'single';
+  form.blankCount = 1;
+  form.options = [...DEFAULT_OPTIONS];
+  form.answerLetters = [];
+  form.judgeAnswer = '';
+  form.blanks = [''];
   form.answer = '';
   form.analysis = '';
   form.requirements = '';
   form.codeFramework = '';
   form.hints = '';
-  form.knowledgePointIds = '';
   form.solutionOutline = '';
   form.weight = 1;
   form.judgeMode = 1;
   form.testCases = '';
   form.chapterId = filters.chapterId;
-  form.difficulty = 2;
+  form.difficultyConfigId = 0;
   form.score = 5;
   form.cognitiveLevel = '理解';
 }
 
-/** 后端下发的 JSON 字符串 / 数组 → 表单可编辑文本；解析失败保留原文，提交时再兜一次 */
-function jsonToText(raw: string | string[] | null | undefined): string {
-  if (Array.isArray(raw)) return raw.join('\n');
-  const text = String(raw ?? '').trim();
-  if (!text) return '';
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (Array.isArray(parsed)) {
-      return parsed.map((item) => (item && typeof item === 'object' ? JSON.stringify(item) : String(item))).join('\n');
-    }
-    if (parsed && typeof parsed === 'object') return JSON.stringify(parsed, null, 2);
-    return String(parsed);
-  } catch {
-    return text;
-  }
+/** 选项字母：0→A、1→B… */
+const optionLetter = (index: number) => String.fromCharCode(65 + index);
+
+/** 答案下拉的候选项：只列已填写的选项，空选项不给选 */
+const answerChoices = computed(() =>
+  form.options
+    .map((text, i) => ({ value: optionLetter(i), text: text.trim() }))
+    .filter((o) => o.text)
+    .map((o) => ({ value: o.value, label: `${o.value}. ${o.text}` })),
+);
+
+function addOption() {
+  if (form.options.length >= OPTION_MAX) return;
+  form.options.push('');
 }
 
-/** 一行一个选项 → 字符串数组；已是 JSON 数组则规范化 */
-function buildOptionsArray(text: string): string[] | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return (Array.isArray(parsed) ? parsed : [parsed]).map((item) => String(item));
-  } catch {
-    // 非 JSON：按行切分成数组
-  }
-  return trimmed
-    .split('\n')
-    .map((s) => s.trim())
+/** 只有选项还填着内容的字母才算有效答案（清空选项后旧字母会自动作废） */
+const validLetters = computed(() =>
+  form.answerLetters.filter((letter) => !!form.options[letter.charCodeAt(0) - 65]?.trim()),
+);
+
+/** 删除选项：字母会整体前移，按「选项文本」把已选答案重新映射到新字母 */
+function removeOption(index: number) {
+  if (form.options.length <= OPTION_MIN) return;
+  const selectedTexts = form.answerLetters
+    .map((letter) => form.options[letter.charCodeAt(0) - 65]?.trim() ?? '')
+    .filter(Boolean);
+  form.options.splice(index, 1);
+  form.answerLetters = form.options
+    .map((text, i) => (selectedTexts.includes(text.trim()) ? optionLetter(i) : ''))
     .filter(Boolean);
 }
 
-/** 后端 answer 是 String，原样提交（选择题 A / A,B，编程题为参考实现） */
-function buildAnswer(text: string): string | undefined {
-  return text.trim() || undefined;
+/** 切换题型：选择题至少摆两个空位；判断题只接受「正确 / 错误」 */
+function onTypeChange() {
+  if (form.type === 1) {
+    while (form.options.length < OPTION_MIN) form.options.push('');
+  }
+  if (form.type === 3 && form.answer && !['正确', '错误'].includes(form.answer)) {
+    form.answer = '';
+  }
+}
+
+/** 已保存的答案 → 选项字母：兼容 "A" / "A,B" / "A. 选项原文" / 选项原文 */
+function parseAnswerLetters(raw: unknown, options: string[]): string[] {
+  const text = String(raw ?? '').trim();
+  if (!text) return [];
+  const compact = text.replace(/\s+/g, '');
+  if (/^[A-H]([,，、;；/][A-H])*$/i.test(compact)) {
+    return compact.toUpperCase().split(/[,，、;；/]/).filter(Boolean);
+  }
+  const hit = options.findIndex((o) => o.trim() === text);
+  if (hit >= 0) return [optionLetter(hit)];
+  const prefixed = text.match(/^([A-H])[.．、:：]/i);
+  return prefixed ? [prefixed[1].toUpperCase()] : [];
+}
+
+/** 判断题答案归一：后端新格式是布尔值，旧数据可能是 对/错、true/false、1/0 */
+function normalizeJudgeAnswer(raw: string): '正确' | '错误' | '' {
+  const text = raw.trim();
+  if (/^(正确|对|是|true|t|1)$/i.test(text)) return '正确';
+  if (/^(错误|错|否|false|f|0)$/i.test(text)) return '错误';
+  return '';
+}
+
+/** answer.correct → 选项字母：新格式是数组，旧数据可能是 "A,B" 或 "A. 选项原文" */
+function lettersFromAnswer(answer?: QuestionAnswer): string[] {
+  const correct = answer?.correct;
+  const raw = Array.isArray(correct) ? correct : typeof correct === 'string' ? [correct] : [];
+  const letters = raw.flatMap((v) => parseAnswerLetters(v, form.options));
+  return [...new Set(letters)];
+}
+
+/** answer.correct → 判断题答案：布尔值直接换算，字符串走归一 */
+function judgeFromAnswer(answer?: QuestionAnswer): '正确' | '错误' | '' {
+  const correct = answer?.correct;
+  if (typeof correct === 'boolean') return correct ? '正确' : '错误';
+  const first = Array.isArray(correct) ? String(correct[0] ?? '') : String(correct ?? '');
+  return normalizeJudgeAnswer(first);
+}
+
+/** answer.blanks → 填空答案，空数组时留一行输入框 */
+function blanksFromAnswer(answer?: QuestionAnswer): string[] {
+  const list = (answer?.blanks ?? []).map((v) => String(v ?? ''));
+  return list.length ? list : [''];
+}
+
+/** 文本答案：程序阅读题取 output，其余取 reference（缺键时互相兜底） */
+function textAnswerFrom(answer: QuestionAnswer | undefined, type: number): string {
+  if (!answer) return '';
+  if (type === 4) return answer.output ?? answer.reference ?? '';
+  return answer.reference ?? answer.output ?? '';
+}
+
+function addBlank() {
+  if (form.blanks.length >= 10) return;
+  form.blanks.push('');
+  form.blankCount = form.blanks.length;
+}
+
+function removeBlank(index: number) {
+  if (form.blanks.length <= 1) return;
+  form.blanks.splice(index, 1);
+  form.blankCount = form.blanks.length;
+}
+
+/** 「空数」输入框：与答案列表双向对齐，多退少补 */
+function setBlankCount(value: number | undefined) {
+  const size = Math.max(1, Math.min(10, Math.floor(Number(value) || 1)));
+  form.blanks = Array.from({ length: size }, (_, i) => form.blanks[i] ?? '');
+  form.blankCount = size;
+}
+
+function fillForm(item: QuestionAdminItem) {
+  form.id = item.id ?? null;
+  form.content = String(item.content ?? '');
+  form.shortTitle = String(item.shortTitle ?? '');
+  form.type = codeFrom(TYPE_LABELS, item.type, 1);
+  form.choiceMode = item.renderConfig?.choiceMode === 'multiple' ? 'multiple' : 'single';
+
+  const savedOptions = (item.options ?? []).map((s) => String(s ?? '').trim()).slice(0, OPTION_MAX);
+  form.options = savedOptions.length >= OPTION_MIN ? savedOptions : [...DEFAULT_OPTIONS];
+
+  const answer = item.answer;
+  form.answerLetters = form.type === 1 ? lettersFromAnswer(answer) : [];
+  form.judgeAnswer = form.type === 3 ? judgeFromAnswer(answer) : '';
+  form.blanks = form.type === 2 ? blanksFromAnswer(answer) : [''];
+  // 空数以 renderConfig.blankCount 为准；老数据没有时退回答案里的空数
+  const savedBlankCount = Number(item.renderConfig?.blankCount);
+  form.blankCount =
+    Number.isFinite(savedBlankCount) && savedBlankCount > 0 ? savedBlankCount : Math.max(1, form.blanks.length);
+  if (form.type === 2) {
+    form.blanks = Array.from({ length: form.blankCount }, (_, i) => form.blanks[i] ?? '');
+  }
+  form.answer = textAnswerFrom(answer, form.type);
+
+  form.analysis = String(item.analysis ?? '');
+  form.requirements = (item.requirements ?? []).join('\n');
+  form.codeFramework = String(item.codeFramework ?? '');
+  form.hints = (item.hints ?? []).join('\n');
+  form.solutionOutline = String(item.solutionOutline ?? '');
+  form.weight = Number.isFinite(Number(item.weight)) ? Number(item.weight) : 1;
+  form.judgeMode = codeFrom(JUDGE_MODE_LABELS, item.judgeMode, 1);
+  form.testCases = item.testCases?.length ? JSON.stringify(item.testCases, null, 2) : '';
+  form.chapterId = item.chapterId ?? null;
+  form.difficultyConfigId = Number(item.difficultyConfigId) || 0;
+  form.score = Number.isFinite(Number(item.score)) ? Number(item.score) : 5;
+  form.cognitiveLevel = cognitiveText(item.cognitiveLevel);
 }
 
 function buildStringList(text: string): string[] | undefined {
@@ -331,14 +429,6 @@ function buildStringList(text: string): string[] | undefined {
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
-  return list.length ? list : undefined;
-}
-
-function buildIdList(text: string): number[] | undefined {
-  const list = text
-    .split(/[,，\s]+/)
-    .map((s) => Number(s))
-    .filter((n) => Number.isInteger(n) && n > 0);
   return list.length ? list : undefined;
 }
 
@@ -367,27 +457,6 @@ function buildTestCases(text: string): JudgeTestCase[] | undefined {
   });
 }
 
-function fillForm(item: QuestionAdminItem) {
-  form.id = item.id ?? null;
-  form.content = String(item.content ?? '');
-  form.type = codeFrom(TYPE_LABELS, item.type, 1);
-  form.options = jsonToText(item.options);
-  form.answer = jsonToText(item.answer);
-  form.analysis = String(item.analysis ?? '');
-  form.requirements = (item.requirements ?? []).join('\n');
-  form.codeFramework = String(item.codeFramework ?? '');
-  form.hints = (item.hints ?? []).join('\n');
-  form.knowledgePointIds = (item.knowledgePointIds ?? []).join(',');
-  form.solutionOutline = String(item.solutionOutline ?? '');
-  form.weight = Number.isFinite(Number(item.weight)) ? Number(item.weight) : 1;
-  form.judgeMode = codeFrom(JUDGE_MODE_LABELS, item.judgeMode, 1);
-  form.testCases = item.testCases?.length ? JSON.stringify(item.testCases, null, 2) : '';
-  form.chapterId = item.chapterId ?? null;
-  form.difficulty = codeFrom(DIFFICULTY_LABELS, item.difficulty, 2);
-  form.score = Number.isFinite(Number(item.score)) ? Number(item.score) : 5;
-  form.cognitiveLevel = cognitiveText(item.cognitiveLevel);
-}
-
 function openDrawer(mode: 'create' | 'edit', row?: QuestionAdminItem) {
   drawerMode.value = mode;
   drawerError.value = '';
@@ -396,7 +465,7 @@ function openDrawer(mode: 'create' | 'edit', row?: QuestionAdminItem) {
     resetForm();
     return;
   }
-  // 编辑：优先用详情接口回显（含答案与解析），桩未实现时退回列表行数据并标注
+  // 编辑：先用列表行回显，再拉详情补全答案与解析
   fillForm(row);
   drawerLoading.value = true;
   fetchQuestionAdminDetail(row.id)
@@ -405,7 +474,7 @@ function openDrawer(mode: 'create' | 'edit', row?: QuestionAdminItem) {
       drawerError.value = '';
     })
     .catch((e: unknown) => {
-      drawerError.value = `${apiErrorText('@/api/exam.fetchQuestionAdminDetail', e)}；已退回列表行数据回显，答案/解析等字段可能不完整`;
+      drawerError.value = `${apiErrorText('题目详情读取失败', e)}；已用列表中的内容回显，答案、解析等可能不完整`;
     })
     .finally(() => {
       drawerLoading.value = false;
@@ -416,27 +485,58 @@ function closeDrawer() {
   drawerVisible.value = false;
 }
 
+/** 各题型需要填写的字段：选择=选项+字母答案；判断=正确/错误；程序阅读=代码+要求；编程=代码+用例+判题方式 */
+const isChoice = computed(() => form.type === 1);
+const isFill = computed(() => form.type === 2);
+const isJudge = computed(() => form.type === 3);
+const isReading = computed(() => form.type === 4);
 const isProgramming = computed(() => form.type === 5);
+const needsCode = computed(() => isReading.value || isProgramming.value);
+
+/** 按题型组装 answer 对象：选择/判断用 correct、填空用 blanks、阅读用 output、编程/简答用 reference */
+function buildAnswerPayload(): QuestionAnswer {
+  if (isChoice.value) return { correct: validLetters.value };
+  if (isJudge.value) return { correct: form.judgeAnswer === '正确' };
+  if (isFill.value) {
+    // 空数以 renderConfig.blankCount 为准：不足补空、超出截断，保证判分按空位对齐
+    const values = Array.from({ length: Math.max(1, form.blankCount) }, (_, i) => (form.blanks[i] ?? '').trim());
+    return { blanks: values };
+  }
+  if (isReading.value) return { output: form.answer.trim() };
+  return { reference: form.answer.trim() };
+}
 
 function buildPayload(): QuestionSaveRequest {
   const payload: QuestionSaveRequest = {
     content: form.content.trim(),
+    // 简短题目：空则传 undefined，由后端留空
+    shortTitle: form.shortTitle.trim() || undefined,
     type: form.type,
-    options: buildOptionsArray(form.options),
-    answer: buildAnswer(form.answer),
+    answer: buildAnswerPayload(),
     analysis: form.analysis.trim() || undefined,
-    requirements: buildStringList(form.requirements),
-    codeFramework: form.codeFramework || undefined,
-    hints: buildStringList(form.hints),
-    knowledgePointIds: buildIdList(form.knowledgePointIds),
-    solutionOutline: form.solutionOutline.trim() || undefined,
-    weight: form.weight,
-    judgeMode: form.judgeMode,
     chapterId: form.chapterId ?? undefined,
-    difficulty: form.difficulty,
+    difficultyConfigId: form.difficultyConfigId || undefined,
     score: form.score,
     cognitiveLevel: form.cognitiveLevel,
   };
+  if (isChoice.value) {
+    payload.options = form.options.map((s) => s.trim()).filter(Boolean);
+    // 多选必须显式声明：答案只勾了一个选项时后端无法推断
+    payload.renderConfig = { choiceMode: form.choiceMode };
+  }
+  if (isFill.value) {
+    payload.renderConfig = { blankCount: Math.max(1, form.blankCount) };
+  }
+  if (needsCode.value) {
+    payload.codeFramework = form.codeFramework.trim() || undefined;
+    payload.requirements = buildStringList(form.requirements);
+  }
+  if (isProgramming.value) {
+    payload.hints = buildStringList(form.hints);
+    payload.solutionOutline = form.solutionOutline.trim() || undefined;
+    payload.weight = form.weight;
+    payload.judgeMode = form.judgeMode;
+  }
   if (drawerMode.value === 'edit' && form.id != null) payload.id = form.id;
   return payload;
 }
@@ -447,12 +547,37 @@ async function handleSave() {
     ElMessage.warning('题干不能为空');
     return;
   }
-  if (!form.answer.trim()) {
-    ElMessage.warning('标准答案（answer）不能为空');
+  if (isChoice.value) {
+    const filledFlags = form.options.map((s) => !!s.trim());
+    if (filledFlags.filter(Boolean).length < OPTION_MIN) {
+      ElMessage.warning(`选择题至少需要 ${OPTION_MIN} 个选项`);
+      return;
+    }
+    const firstEmpty = filledFlags.indexOf(false);
+    if (firstEmpty >= 0 && filledFlags.slice(firstEmpty).some(Boolean)) {
+      ElMessage.warning('选项要按顺序填写，中间不要留空');
+      return;
+    }
+    if (!validLetters.value.length) {
+      ElMessage.warning('请选择正确答案');
+      return;
+    }
+  } else if (isJudge.value) {
+    if (!form.judgeAnswer) {
+      ElMessage.warning('请选择这道判断题的答案');
+      return;
+    }
+  } else if (isFill.value) {
+    if (!form.blanks.some((b) => b.trim())) {
+      ElMessage.warning('请填写填空答案');
+      return;
+    }
+  } else if (!form.answer.trim()) {
+    ElMessage.warning('请填写参考答案');
     return;
   }
   if (form.chapterId == null) {
-    ElMessage.warning('章节（chapterId）不能为空');
+    ElMessage.warning('请选择章节');
     return;
   }
   if (drawerMode.value === 'edit' && form.id == null) {
@@ -461,31 +586,32 @@ async function handleSave() {
   }
 
   let testCases: JudgeTestCase[] | undefined;
-  try {
-    testCases = buildTestCases(form.testCases);
-  } catch {
-    ElMessage.error('测试用例格式不正确，本次没有保存。请按示例填写用例列表');
-    return;
+  if (isProgramming.value) {
+    try {
+      testCases = buildTestCases(form.testCases);
+    } catch {
+      ElMessage.error('测试用例格式不正确，本次没有保存。请按示例填写用例列表');
+      return;
+    }
   }
 
   const payload = buildPayload();
-  payload.testCases = testCases;
+  if (isProgramming.value) payload.testCases = testCases;
 
   saving.value = true;
   try {
     if (drawerMode.value === 'create') {
-      const id = await createQuestion(payload);
-      ElMessage.success(id ? `题目已新增（编号 ${id}）` : '题目已新增');
+      await createQuestion(payload);
+      ElMessage.success('题目已新增');
     } else {
-      const msg = await updateQuestion(payload);
-      ElMessage.success(msg || '题目已更新');
+      // 提示固定用本地文案：后端写接口只回 { code, data: null }，没有可展示的 message
+      await updateQuestion(payload);
+      ElMessage.success('题目已更新');
     }
     closeDrawer();
     await loadList();
   } catch (e) {
-    ElMessage.error(
-      apiErrorText(drawerMode.value === 'create' ? '@/api/exam.createQuestion' : '@/api/exam.updateQuestion', e),
-    );
+    ElMessage.error(apiErrorText('保存题目失败', e));
   } finally {
     saving.value = false;
   }
@@ -498,7 +624,7 @@ async function handleDelete(row: QuestionAdminItem) {
   if (deletingId.value != null) return;
   try {
     await ElMessageBox.confirm(
-      `删除题目（编号 ${row.id}），题干：${String(row.content ?? '').slice(0, 30)}…删除后这道题不再出现在题库里，确认删除？`,
+      `删除题目「${String(row.content ?? '').slice(0, 30)}…」？删除后这道题不再出现在题库里。`,
       '删除题目',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     );
@@ -508,68 +634,125 @@ async function handleDelete(row: QuestionAdminItem) {
 
   deletingId.value = row.id;
   try {
-    const msg = await deleteQuestion(row.id);
-    ElMessage.success(msg || '题目已删除');
+    await deleteQuestion(row.id);
+    ElMessage.success('题目已删除');
     await loadList();
   } catch (e) {
-    ElMessage.error(apiErrorText('@/api/exam.deleteQuestion', e));
+    ElMessage.error(apiErrorText('删除题目失败', e));
   } finally {
     deletingId.value = null;
   }
 }
 
-// ==================== 随机抽题组卷 ====================
-const randomVisible = ref(false);
-const randomLoading = ref(false);
-const randomError = ref('');
-const randomResult = ref<QuestionAdminItem[]>([]);
-const randomForm = reactive({
-  chapterId: null as number | null,
-  count: 5,
-  type: 0,
-  difficulty: 0,
+// ==================== 选题组卷（面板与作业发布页共用） ====================
+const pickerVisible = ref(false);
+const picked = ref<QuestionAdminItem[]>([]);
+
+/** 一次作业只对应一个章节，跨章节选题要先收敛 */
+const pickedChapterIds = computed(() => [
+  ...new Set(picked.value.map((q) => Number(q.chapterId ?? 0)).filter((id) => id > 0)),
+]);
+const pickedChapterId = computed(() =>
+  pickedChapterIds.value.length === 1 ? pickedChapterIds.value[0] : null,
+);
+const pickedScore = computed(() =>
+  picked.value.reduce((sum, q) => sum + (Number(q.score) || 0), 0),
+);
+
+function openPicker() {
+  publishOpen.value = false;
+  pickerVisible.value = true;
+}
+
+function closePicker() {
+  pickerVisible.value = false;
+  publishOpen.value = false;
+}
+
+// ---------- 把选好的题直接布置成作业 ----------
+const classes = ref<ClassResponse[]>([]);
+const publishOpen = ref(false);
+const publishing = ref(false);
+const publishForm = reactive({
+  title: '',
+  classId: null as number | null,
+  deadline: '',
+  content: '',
+  allowLateSubmit: 0,
+  totalScore: 0,
 });
 
-function openRandom() {
-  randomForm.chapterId = filters.chapterId ?? randomForm.chapterId;
-  randomError.value = '';
-  randomVisible.value = true;
-}
+const canPublishPicked = computed(
+  () =>
+    !!publishForm.title.trim() &&
+    publishForm.classId != null &&
+    !!publishForm.deadline &&
+    picked.value.length > 0 &&
+    pickedChapterId.value != null,
+);
 
-async function runRandom() {
-  if (randomLoading.value) return;
-  if (randomForm.chapterId == null) {
-    ElMessage.warning('随机抽题前请先选择章节');
+async function openPublishForm() {
+  if (!picked.value.length) {
+    ElMessage.warning('请先在面板里勾选题目');
     return;
   }
-  randomLoading.value = true;
-  randomError.value = '';
+  if (pickedChapterId.value == null) {
+    ElMessage.warning('已选题目跨了多个章节，一次作业只能覆盖一个章节');
+    return;
+  }
+  if (!classes.value.length) {
+    try {
+      classes.value = await fetchClasses();
+    } catch {
+      // 错误由响应拦截器统一提示
+    }
+  }
+  const count = picked.value.length;
+  publishForm.title = `${chapterTitle(pickedChapterId.value)} · 组卷练习（${count} 题）`;
+  publishForm.classId = null;
+  publishForm.deadline = defaultDeadline();
+  publishForm.content = `本作业由题库组卷生成，共 ${count} 道题，请按时完成。`;
+  publishForm.allowLateSubmit = 0;
+  publishForm.totalScore = pickedScore.value;
+  publishOpen.value = true;
+}
+
+async function submitPublish() {
+  if (publishing.value || !canPublishPicked.value || pickedChapterId.value == null) return;
+  publishing.value = true;
   try {
-    const list = await randomQuestions({
-      chapterId: randomForm.chapterId,
-      count: randomForm.count,
-      type: randomForm.type || undefined,
-      difficulty: randomForm.difficulty || undefined,
+    await publishHomework({
+      title: publishForm.title.trim(),
+      content: publishForm.content.trim() || `共 ${picked.value.length} 道题`,
+      chapterId: pickedChapterId.value,
+      // 数组顺序即题目顺序；总分由后端按题目分值汇总，不再前端计算
+      questions: picked.value.map((q) => ({
+        questionId: Number(q.id),
+        score: Number.isFinite(Number(q.score)) ? Number(q.score) : undefined,
+      })),
+      deadline: publishForm.deadline,
+      classId: publishForm.classId ?? undefined,
+      allowLateSubmit: publishForm.allowLateSubmit,
     });
-    randomResult.value = list ?? [];
-    if (!randomResult.value.length) ElMessage.info('该条件下没有可抽取的题目');
+    ElMessage.success('作业已发布，学生端可见');
+    picked.value = [];
+    closePicker();
   } catch (e) {
-    randomResult.value = [];
-    randomError.value = apiErrorText('@/api/exam.randomQuestions', e);
+    ElMessage.error(apiErrorText('发布作业失败', e));
   } finally {
-    randomLoading.value = false;
+    publishing.value = false;
   }
 }
 
-// ==================== AI 出题（已对接，异步落库） ====================
+// ==================== AI 出题（异步落库） ====================
 const aiVisible = ref(false);
 const aiLoading = ref(false);
 const aiError = ref('');
-const aiBatch = ref<number | null>(null);
 const aiForm = reactive({
   chapterId: null as number | null,
   /** QuestionGenerateRequest.questionType 是 string：'all' 或 '1'~'6' */
   questionType: 'all',
+  difficultyConfigId: 0,
   count: 5,
   userInstruction: '',
 });
@@ -581,6 +764,7 @@ const AI_TYPE_OPTIONS = [
 
 function openAi() {
   aiForm.chapterId = filters.chapterId ?? aiForm.chapterId;
+  aiForm.difficultyConfigId = filters.difficultyConfigId;
   aiError.value = '';
   aiVisible.value = true;
 }
@@ -590,16 +774,19 @@ async function runGenerate() {
   aiLoading.value = true;
   aiError.value = '';
   try {
-    const batch = await generateQuestions({
+    const accepted = await generateQuestions({
       chapterId: aiForm.chapterId ?? undefined,
+      difficultyConfigId: aiForm.difficultyConfigId || undefined,
       questionType: aiForm.questionType,
       count: aiForm.count,
       userInstruction: aiForm.userInstruction.trim() || undefined,
     });
-    aiBatch.value = batch;
-    ElMessage.success(`出题任务已提交（批次 ${batch}），题目稍后会自动出现在列表里，请稍候刷新查看`);
+    if (accepted === 0) {
+      aiError.value = '出题任务没能提交成功，请稍后重试';
+      return;
+    }
+    ElMessage.success('出题任务已提交，题目生成后会出现在列表里，稍后刷新即可看到');
     aiVisible.value = false;
-    // 生成接口不回题目内容，只能回读列表接口
     await loadList();
   } catch (e) {
     aiError.value = `出题任务提交失败：${(e as Error)?.message ?? '未知错误'}`;
@@ -609,6 +796,7 @@ async function runGenerate() {
 }
 
 onMounted(() => {
+  difficultyStore.load();
   loadChapters();
   loadList();
 });
@@ -618,7 +806,7 @@ onMounted(() => {
   <div class="st-view">
     <header class="st-page-header">
       <h1 class="st-page-title">题库管理</h1>
-      <p class="st-page-subtitle">维护章节题目 · 支持手动录入、AI 出题与随机抽题组卷</p>
+      <p class="st-page-subtitle">维护章节题目 · 支持手动录入、AI 出题与选题组卷</p>
     </header>
 
     <!-- 筛选 -->
@@ -627,18 +815,13 @@ onMounted(() => {
         <Search :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">题目筛选</h2>
-          <p class="st-card__hint">
-            已对接 @/api/exam.fetchQuestionAdminList · GET /api/exam/question/admin/list?chapterId&amp;type&amp;difficulty&amp;keyword&amp;pageNum&amp;pageSize
-          </p>
+          <p class="st-card__hint">按章节、题型、难度和题干关键词筛选题目</p>
         </div>
-        <span class="st-badge st-badge--success shell-badge"><Database :size="11" /> 已对接</span>
       </div>
       <div class="st-card__body filter-row">
         <div class="filter-item">
           <label class="filter-label">教材章节</label>
-          <el-select v-model="filters.chapterId" placeholder="全部章节" clearable filterable style="width: 200px;">
-            <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
-          </el-select>
+          <ChapterSelect v-model="filters.chapterId" placeholder="全部章节" clearable style="width: 220px;" />
         </div>
         <div class="filter-item">
           <label class="filter-label">题型</label>
@@ -649,9 +832,9 @@ onMounted(() => {
         </div>
         <div class="filter-item">
           <label class="filter-label">难度</label>
-          <el-select v-model="filters.difficulty" style="width: 130px;">
+          <el-select v-model="filters.difficultyConfigId" style="width: 130px;">
             <el-option label="全部难度" :value="0" />
-            <el-option v-for="d in DIFFICULTY_OPTIONS" :key="d.value" :label="d.label" :value="d.value" />
+            <el-option v-for="d in difficultyOptions" :key="d.value" :label="d.label" :value="d.value" />
           </el-select>
         </div>
         <div class="filter-item">
@@ -671,10 +854,6 @@ onMounted(() => {
         <p v-if="chaptersError" class="inline-error">
           <AlertTriangle :size="12" /> {{ chaptersError }}
         </p>
-        <p class="code-note">
-          题型 / 难度下拉提交数字码值（题型 1~6、难度 1~3），与后端枚举一致；
-          难度与题干关键词由列表接口过滤，分页参数为 <code>pageNum/pageSize</code>。
-        </p>
       </div>
     </div>
 
@@ -683,16 +862,14 @@ onMounted(() => {
       <div class="st-card__body toolbar-row">
         <span class="toolbar-count">
           共 {{ total }} 题 · 第 {{ page }} / {{ pageCount }} 页 · 本页 {{ rows.length }} 行
-          <span v-if="aiBatch !== null" class="toolbar-batch">最近 AI 出题批次 {{ aiBatch }}</span>
         </span>
         <div class="toolbar-actions">
           <button
             class="st-btn st-btn--secondary"
-            :disabled="randomLoading"
-            title="按章节随机抽题"
-            @click="openRandom"
+            title="勾选或随机抽题组卷，并可直接布置作业"
+            @click="openPicker"
           >
-            <Layers :size="13" /> 随机抽题组卷
+            <Layers :size="13" /> 选题组卷
           </button>
           <button
             class="st-btn st-btn--secondary"
@@ -747,6 +924,7 @@ onMounted(() => {
               <thead>
                 <tr>
                   <th>编号</th>
+                  <th>简短题目</th>
                   <th>题干</th>
                   <th>题型</th>
                   <th>难度</th>
@@ -760,10 +938,11 @@ onMounted(() => {
               <tbody>
                 <tr v-for="row in rows" :key="row.id">
                   <td class="cell-secondary">{{ row.id }}</td>
+                  <td class="cell-content" :title="row.shortTitle || ''">{{ row.shortTitle || '—' }}</td>
                   <td class="cell-content" :title="row.content">{{ row.content || '—' }}</td>
                   <td><span class="st-badge st-badge--outline">{{ typeLabel(row.type) }}</span></td>
-                  <td class="cell-secondary">{{ difficultyLabel(row.difficulty) }}</td>
-                  <td class="cell-secondary">{{ chapterTitle(row.chapterId) }}</td>
+                  <td class="cell-secondary">{{ difficultyText(row) }}</td>
+                  <td class="cell-secondary">{{ chapterLabel(row.chapterId) }}</td>
                   <td class="cell-secondary">{{ row.score ?? '—' }}</td>
                   <td class="cell-secondary">{{ row.submitCount ?? 0 }}</td>
                   <td class="cell-secondary">{{ ratePercent(row.acceptanceRate) }}</td>
@@ -820,18 +999,12 @@ onMounted(() => {
         <div v-if="drawerVisible" class="drawer-overlay" @click.self="closeDrawer">
           <div class="drawer">
             <div class="drawer-header">
-              <h3>{{ drawerMode === 'create' ? '新增题目' : `编辑题目 #${form.id ?? '—'}` }}</h3>
+              <h3>{{ drawerMode === 'create' ? '新增题目' : '编辑题目' }}</h3>
               <button class="drawer-close" @click="closeDrawer">
                 <X :size="14" />
               </button>
             </div>
             <div class="drawer-body">
-              <p class="drawer-hint">
-                {{ drawerMode === 'create' ? 'POST /api/exam/question/admin/save' : 'PUT /api/exam/question/admin/update（带 id）' }}
-                —— 已对接 @/api/exam.{{ drawerMode === 'create' ? 'createQuestion' : 'updateQuestion' }}。
-                options 以字符串数组提交；answer 按题型填原始答案文本；testCases 填 JudgeTestCase[] 的 JSON 数组。
-              </p>
-
               <p v-if="drawerLoading" class="drawer-loading">
                 <Loader2 :size="13" class="spin" /> 正在读取这道题的完整信息…
               </p>
@@ -844,17 +1017,27 @@ onMounted(() => {
                 <textarea v-model="form.content" class="form-textarea" rows="3" placeholder="题干正文"></textarea>
               </div>
 
+              <div class="form-item">
+                <label class="form-label">简短题目（选填，≤100 字）</label>
+                <input
+                  v-model="form.shortTitle"
+                  class="form-input"
+                  maxlength="100"
+                  placeholder="一话题名，如「接口与抽象类的区别」；留空时列表回退展示题干"
+                />
+              </div>
+
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
                   <label class="form-label">题型</label>
-                  <el-select v-model="form.type" style="width: 100%;">
+                  <el-select v-model="form.type" style="width: 100%;" @change="onTypeChange">
                     <el-option v-for="t in QUESTION_TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
                   </el-select>
                 </div>
                 <div class="form-item" style="flex: 1;">
                   <label class="form-label">难度</label>
-                  <el-select v-model="form.difficulty" style="width: 100%;">
-                    <el-option v-for="d in DIFFICULTY_OPTIONS" :key="d.value" :label="d.label" :value="d.value" />
+                  <el-select v-model="form.difficultyConfigId" placeholder="选择难度" style="width: 100%;">
+                    <el-option v-for="d in difficultyOptions" :key="d.value" :label="d.label" :value="d.value" />
                   </el-select>
                 </div>
               </div>
@@ -862,15 +1045,13 @@ onMounted(() => {
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
                   <label class="form-label">章节</label>
-                  <el-select v-model="form.chapterId" placeholder="选择章节" clearable filterable style="width: 100%;">
-                    <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
-                  </el-select>
+                  <ChapterSelect v-model="form.chapterId" placeholder="选择章节" clearable style="width: 100%;" />
                 </div>
                 <div class="form-item" style="width: 110px;">
                   <label class="form-label">分值</label>
                   <el-input-number v-model="form.score" :min="0" :max="100" style="width: 100%;" />
                 </div>
-                <div class="form-item" style="width: 110px;">
+                <div v-if="isProgramming" class="form-item" style="width: 110px;">
                   <label class="form-label">权重</label>
                   <el-input-number v-model="form.weight" :min="0" :step="0.1" style="width: 100%;" />
                 </div>
@@ -883,7 +1064,7 @@ onMounted(() => {
                     <el-option v-for="c in COGNITIVE_OPTIONS" :key="c" :label="c" :value="c" />
                   </el-select>
                 </div>
-                <div class="form-item" style="flex: 1;">
+                <div v-if="isProgramming" class="form-item" style="flex: 1;">
                   <label class="form-label">判题方式</label>
                   <el-select v-model="form.judgeMode" style="width: 100%;">
                     <el-option v-for="j in JUDGE_MODE_OPTIONS" :key="j.value" :label="j.label" :value="j.value" />
@@ -891,18 +1072,117 @@ onMounted(() => {
                 </div>
               </div>
 
-              <div v-if="!isProgramming" class="form-item">
-                <label class="form-label">选项（options，一行一个，以字符串数组提交）</label>
-                <textarea v-model="form.options" class="form-textarea" rows="4" placeholder="A. 选项一&#10;B. 选项二"></textarea>
+              <!-- 选择题：逐条编辑选项 + 从选项里选答案 -->
+              <template v-if="isChoice">
+                <div class="form-item">
+                  <label class="form-label">选择方式</label>
+                  <!-- 显式声明：多选只勾一个选项时后端无法从答案推断，必须靠 renderConfig -->
+                  <el-radio-group v-model="form.choiceMode">
+                    <el-radio-button value="single">单选</el-radio-button>
+                    <el-radio-button value="multiple">多选</el-radio-button>
+                  </el-radio-group>
+                </div>
+                <div class="form-item">
+                  <div class="option-head">
+                    <label class="form-label">选项（至少 {{ OPTION_MIN }} 个，最多 {{ OPTION_MAX }} 个）</label>
+                    <button
+                      type="button"
+                      class="st-text-btn"
+                      :disabled="form.options.length >= OPTION_MAX"
+                      @click="addOption"
+                    >
+                      <Plus :size="12" /> 添加选项
+                    </button>
+                  </div>
+                  <div class="option-list">
+                    <div v-for="(_, i) in form.options" :key="i" class="option-row">
+                      <span class="option-letter">{{ optionLetter(i) }}</span>
+                      <input
+                        v-model="form.options[i]"
+                        class="form-input"
+                        :placeholder="`选项 ${optionLetter(i)} 的内容`"
+                      />
+                      <button
+                        type="button"
+                        class="option-remove"
+                        :disabled="form.options.length <= OPTION_MIN"
+                        title="删除这个选项"
+                        @click="removeOption(i)"
+                      >
+                        <X :size="12" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-item">
+                  <label class="form-label">正确答案（多选可以选多个）</label>
+                  <el-select
+                    v-model="form.answerLetters"
+                    multiple
+                    placeholder="从上面的选项里选择"
+                    style="width: 100%;"
+                  >
+                    <el-option v-for="o in answerChoices" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </div>
+              </template>
+
+              <!-- 判断题：答案只有正确 / 错误 -->
+              <div v-else-if="isJudge" class="form-item">
+                <label class="form-label">答案</label>
+                <el-radio-group v-model="form.judgeAnswer">
+                  <el-radio value="正确">正确</el-radio>
+                  <el-radio value="错误">错误</el-radio>
+                </el-radio-group>
               </div>
 
-              <div class="form-item">
-                <label class="form-label">参考答案（answer，原始文本）</label>
+              <!-- 填空题：一个空一条答案，可增删 -->
+              <div v-else-if="isFill" class="form-item">
+                <div class="option-head">
+                  <label class="form-label">答案（按空的顺序填写，最多 10 空）</label>
+                  <button
+                    type="button"
+                    class="st-text-btn"
+                    :disabled="form.blanks.length >= 10"
+                    @click="addBlank"
+                  >
+                    <Plus :size="12" /> 添加空
+                  </button>
+                </div>
+                <div class="form-item form-item--inline">
+                  <label class="form-label">空数</label>
+                  <el-input-number v-model="form.blankCount" :min="1" :max="10" @change="setBlankCount" />
+                  <span class="form-hint">学生端按这个数量渲染输入框（renderConfig.blankCount）</span>
+                </div>
+                <div class="option-list">
+                  <div v-for="(_, i) in form.blanks" :key="i" class="option-row">
+                    <span class="option-letter">{{ i + 1 }}</span>
+                    <input v-model="form.blanks[i]" class="form-input" :placeholder="`第 ${i + 1} 空的答案`" />
+                    <button
+                      type="button"
+                      class="option-remove"
+                      :disabled="form.blanks.length <= 1"
+                      title="删除这个空"
+                      @click="removeBlank(i)"
+                    >
+                      <X :size="12" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 程序阅读 / 编程 / 简答：文本答案 -->
+              <div v-else class="form-item">
+                <label class="form-label">
+                  {{ isProgramming ? '参考答案（参考实现）' : isReading ? '参考答案（程序输出）' : '参考答案' }}
+                </label>
                 <textarea
                   v-model="form.answer"
                   class="form-textarea"
-                  rows="2"
-                  placeholder="单选填 A；多选填 A,B；编程题可填参考实现"
+                  :class="{ 'code-textarea': isProgramming }"
+                  rows="3"
+                  :placeholder="isProgramming ? '参考实现代码' : isReading ? '程序的输出结果或结论' : '标准答案'"
                 ></textarea>
               </div>
 
@@ -911,7 +1191,7 @@ onMounted(() => {
                 <textarea v-model="form.analysis" class="form-textarea" rows="2" placeholder="答案解析"></textarea>
               </div>
 
-              <template v-if="isProgramming">
+              <template v-if="needsCode">
                 <div class="form-item">
                   <label class="form-label">作答要求（一行一条）</label>
                   <textarea v-model="form.requirements" class="form-textarea" rows="2" placeholder="功能与规范要求"></textarea>
@@ -925,6 +1205,9 @@ onMounted(() => {
                     placeholder="下发给学生的初始代码骨架"
                   ></textarea>
                 </div>
+              </template>
+
+              <template v-if="isProgramming">
                 <div class="form-item">
                   <label class="form-label">提示（一行一条）</label>
                   <textarea v-model="form.hints" class="form-textarea" rows="2" placeholder="分步提示"></textarea>
@@ -941,28 +1224,15 @@ onMounted(() => {
                     rows="7"
                     placeholder='[{"input":"3 5","expectedOutput":"8","description":"示例用例"}]'
                   ></textarea>
-                  <p class="field-hint">
-                    没填的项会自动按默认值补齐（普通用例、权重 1、限时 1000 毫秒、限内存 256 MB）；
-                    格式有误时会提示并暂停保存，不会漏掉用例。
-                  </p>
+                  <p class="field-hint">留空的项会按默认值补齐；格式有误时会提示并暂停保存，不会漏掉用例。</p>
                 </div>
               </template>
-
-              <div class="form-item">
-                <label class="form-label">关联知识点（多个编号用逗号分隔）</label>
-                <input v-model="form.knowledgePointIds" class="form-input" placeholder="如：12,15,23" />
-              </div>
             </div>
             <div class="drawer-footer">
               <button class="st-btn st-btn--ghost" @click="closeDrawer">取消</button>
               <button
                 class="st-btn st-btn--primary"
                 :disabled="saving"
-                :title="
-                  drawerMode === 'create'
-                    ? '已对接 @/api/exam.createQuestion'
-                    : '已对接 @/api/exam.updateQuestion'
-                "
                 @click="handleSave"
               >
                 <Loader2 v-if="saving" :size="14" class="spin" />
@@ -974,89 +1244,80 @@ onMounted(() => {
       </Transition>
     </Teleport>
 
-    <!-- 随机抽题组卷 -->
-    <div v-if="randomVisible" class="overlay" @click.self="randomVisible = false">
+    <!-- 选题组卷：勾选与随机抽题共用一个面板（作业发布页也用同一个组件） -->
+    <div v-if="pickerVisible" class="overlay" @click.self="closePicker">
       <div class="dialog">
         <header class="dialog__head">
           <div>
-            <h3 class="dialog__title">随机抽题组卷</h3>
-            <p class="dialog__sub">已对接 @/api/exam.randomQuestions · POST /api/exam/question/admin/random</p>
+            <h3 class="dialog__title">选题组卷</h3>
+            <p class="dialog__sub">按条件勾选或随机抽题，选好可以直接布置一次作业</p>
           </div>
-          <button class="st-btn st-btn--ghost" @click="randomVisible = false">关闭</button>
+          <button class="st-btn st-btn--ghost" @click="closePicker">关闭</button>
         </header>
         <div class="dialog__body">
-          <div class="form-row">
-            <div class="form-item" style="flex: 1;">
-              <label class="form-label">章节（必选）</label>
-              <el-select v-model="randomForm.chapterId" placeholder="选择章节" filterable style="width: 100%;">
-                <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
-              </el-select>
-            </div>
-            <div class="form-item" style="width: 120px;">
-              <label class="form-label">抽题数</label>
-              <el-input-number v-model="randomForm.count" :min="1" :max="50" style="width: 100%;" />
-            </div>
-            <div class="form-item" style="width: 120px;">
-              <label class="form-label">题型</label>
-              <el-select v-model="randomForm.type" style="width: 100%;">
-                <el-option label="不限" :value="0" />
-                <el-option v-for="t in QUESTION_TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
-              </el-select>
-            </div>
-            <div class="form-item" style="width: 120px;">
-              <label class="form-label">难度</label>
-              <el-select v-model="randomForm.difficulty" style="width: 100%;">
-                <el-option label="不限" :value="0" />
-                <el-option v-for="d in DIFFICULTY_OPTIONS" :key="d.value" :label="d.label" :value="d.value" />
-              </el-select>
-            </div>
-          </div>
+          <QuestionPicker v-model="picked" :initial-chapter-id="filters.chapterId" />
 
-          <div class="dialog__actions">
-            <button class="st-btn st-btn--primary" :disabled="randomLoading" @click="runRandom">
-              <Loader2 v-if="randomLoading" :size="14" class="spin" />
-              <Layers v-else :size="14" />
-              {{ randomLoading ? '抽题中' : '开始抽题' }}
+          <div v-if="!publishOpen" class="dialog__actions">
+            <button class="st-btn st-btn--primary" :disabled="!picked.length" @click="openPublishForm">
+              <Send :size="14" /> 布置为作业（已选 {{ picked.length }} 题 · 总分 {{ pickedScore }}）
             </button>
           </div>
 
-          <div v-if="randomError" class="st-empty" style="padding: 28px 16px;">
-            <AlertTriangle :size="20" :stroke-width="1.2" class="st-empty__icon" />
-            <p class="st-empty__text">{{ randomError }}</p>
-            <button class="st-btn st-btn--secondary" style="margin-top: 10px;" @click="runRandom">
-              <RefreshCw :size="13" /> 重新加载
-            </button>
+          <div v-else class="publish-box">
+            <div class="form-item">
+              <label class="form-label">作业标题</label>
+              <input v-model="publishForm.title" class="form-input" placeholder="作业标题" />
+            </div>
+            <div class="form-row">
+              <div class="form-item" style="flex: 1;">
+                <label class="form-label">发布班级（必选）</label>
+                <el-select v-model="publishForm.classId" placeholder="选择班级" filterable style="width: 100%;">
+                  <el-option v-for="c in classes" :key="c.classId" :label="c.className" :value="c.classId" />
+                </el-select>
+              </div>
+              <div class="form-item" style="flex: 1;">
+                <label class="form-label">截止时间</label>
+                <el-date-picker
+                  v-model="publishForm.deadline"
+                  type="datetime"
+                  value-format="YYYY-MM-DD HH:mm:ss"
+                  placeholder="选择截止时间"
+                  style="width: 100%;"
+                />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-item" style="width: 190px;">
+                <label class="form-label">总分（按题目分值汇总）</label>
+                <div class="publish-score">{{ publishForm.totalScore }} 分 · {{ picked.length }} 题</div>
+              </div>
+              <div class="form-item" style="flex: 1;">
+                <label class="form-label">允许迟交</label>
+                <el-switch v-model="publishForm.allowLateSubmit" :active-value="1" :inactive-value="0" />
+              </div>
+            </div>
+            <div class="form-item">
+              <label class="form-label">作业说明</label>
+              <textarea
+                v-model="publishForm.content"
+                class="form-textarea"
+                rows="2"
+                placeholder="学生端显示的作业说明"
+              ></textarea>
+            </div>
+            <div class="dialog__actions">
+              <button class="st-btn st-btn--secondary" @click="publishOpen = false">取消</button>
+              <button
+                class="st-btn st-btn--primary"
+                :disabled="publishing || !canPublishPicked"
+                @click="submitPublish"
+              >
+                <Loader2 v-if="publishing" :size="14" class="spin" />
+                <Send v-else :size="14" />
+                {{ publishing ? '发布中' : '发布作业' }}
+              </button>
+            </div>
           </div>
-
-          <template v-else-if="randomResult.length">
-            <table class="data-table" style="margin-top: 16px;">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>编号</th>
-                  <th>题干</th>
-                  <th>题型</th>
-                  <th>难度</th>
-                  <th>分值</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(q, i) in randomResult" :key="q.id">
-                  <td class="cell-secondary">{{ i + 1 }}</td>
-                  <td class="cell-secondary">{{ q.id }}</td>
-                  <td class="cell-content" :title="q.content">{{ q.content || '—' }}</td>
-                  <td><span class="st-badge st-badge--outline">{{ typeLabel(q.type) }}</span></td>
-                  <td class="cell-secondary">{{ difficultyLabel(q.difficulty) }}</td>
-                  <td class="cell-secondary">{{ q.score ?? '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p class="json-note">
-              合计 {{ randomResult.length }} 题 · 总分
-              {{ randomResult.reduce((sum, q) => sum + (Number(q.score) || 0), 0) }}。
-              抽题结果暂时不能直接存成试卷；需要布置作业时，请到作业发布页新建作业。
-            </p>
-          </template>
         </div>
       </div>
     </div>
@@ -1073,20 +1334,24 @@ onMounted(() => {
         </header>
         <div class="dialog__body">
           <p class="drawer-hint">
-            系统会自动出题并保存到题库，这里只显示任务批次号，不直接返回题目内容；
-            提交成功后本页会自动刷新，新题目需要一点时间才会出现，稍后再刷新即可看到。
+            系统会按章节和题型自动出题并保存到题库；新题目需要一点时间才会出现，稍后刷新列表即可看到。
           </p>
           <div class="form-row">
             <div class="form-item" style="flex: 1;">
               <label class="form-label">章节（可选）</label>
-              <el-select v-model="aiForm.chapterId" placeholder="不限章节" clearable filterable style="width: 100%;">
-                <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
-              </el-select>
+              <ChapterSelect v-model="aiForm.chapterId" placeholder="不限章节" clearable style="width: 100%;" />
             </div>
             <div class="form-item" style="width: 150px;">
               <label class="form-label">题型</label>
               <el-select v-model="aiForm.questionType" style="width: 100%;">
                 <el-option v-for="t in AI_TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
+              </el-select>
+            </div>
+            <div class="form-item" style="width: 150px;">
+              <label class="form-label">难度</label>
+              <el-select v-model="aiForm.difficultyConfigId" placeholder="不限难度" clearable style="width: 100%;">
+                <el-option label="不限难度" :value="0" />
+                <el-option v-for="d in difficultyOptions" :key="d.value" :label="d.label" :value="d.value" />
               </el-select>
             </div>
             <div class="form-item" style="width: 120px;">
@@ -1103,10 +1368,6 @@ onMounted(() => {
               placeholder="如：围绕多态特性出题，题干带代码片段，难度偏中等"
             ></textarea>
           </div>
-          <p class="field-hint">
-            难度配置项目前还没有可选列表，
-            这里不设置难度配置，题目按上面选的难度生成。
-          </p>
           <p v-if="aiError" class="inline-error">
             <AlertTriangle :size="12" /> {{ aiError }}
           </p>
@@ -1127,11 +1388,6 @@ onMounted(() => {
 <style scoped>
 .card-icon {
   color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.shell-badge {
-  margin-left: auto;
   flex-shrink: 0;
 }
 
@@ -1182,25 +1438,6 @@ onMounted(() => {
   padding-top: 0;
 }
 
-.code-note {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.7;
-  color: var(--text-tertiary);
-}
-
-.code-note b {
-  color: var(--text-secondary);
-}
-
-.code-note code {
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-  font-size: 11px;
-  background: var(--bg-subtle);
-  padding: 1px 5px;
-  border-radius: 4px;
-}
-
 .inline-error {
   display: flex;
   align-items: flex-start;
@@ -1233,12 +1470,6 @@ onMounted(() => {
 .toolbar-count {
   font-size: 12.5px;
   color: var(--text-tertiary);
-}
-
-.toolbar-batch {
-  margin-left: 8px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 11.5px;
 }
 
 .toolbar-actions {
@@ -1433,6 +1664,23 @@ onMounted(() => {
   margin-bottom: 14px;
 }
 
+/* 标签 + 控件 + 说明同排（如填空题的「空数」） */
+.form-item--inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.form-item--inline .form-label {
+  margin-bottom: 0;
+}
+
+.form-hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
 .form-row {
   display: flex;
   gap: 12px;
@@ -1475,6 +1723,76 @@ onMounted(() => {
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--text-tertiary);
+}
+
+/* 选择题选项编辑 */
+.option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.option-head .form-label {
+  margin-bottom: 0;
+}
+
+.option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.option-row .form-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.option-letter {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--bg-subtle);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.option-remove {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition);
+}
+
+.option-remove:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.option-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .drawer-enter-active,
@@ -1559,6 +1877,23 @@ onMounted(() => {
   background: var(--bg-subtle);
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);
+}
+
+/* 抽题结果直接布置作业 */
+.publish-box {
+  margin-top: 14px;
+  padding: 14px 14px 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.publish-score {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .spin {

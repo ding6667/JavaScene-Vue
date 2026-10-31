@@ -136,6 +136,13 @@
   transition: background var(--transition), color var(--transition);
 }
 
+/* 有时用作跳转入口（<a class="st-text-btn">），对齐成和按钮一致的样子 */
+a.st-text-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .st-text-btn:hover:not(:disabled) {
   background: var(--bg-subtle);
   color: var(--text-primary);
@@ -306,4 +313,27 @@
   font-size: 12.5px;
   color: var(--text-tertiary);
   margin-top: 2px;
+}
+
+/* 章节树下拉浮层挂在 body 上，scoped 样式选不到；备课页/题库/作业发布共用同一套黑白样式 */
+.chapter-tree-popper .el-tree-node__content {
+  border-radius: var(--radius-sm);
+}
+
+.chapter-tree-popper .el-tree-node__content:hover {
+  background: var(--bg-subtle);
+}
+
+.chapter-tree-popper .el-tree-node.is-current > .el-tree-node__content {
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.chapter-tree-popper .el-tree-node__expand-icon {
+  color: var(--text-tertiary);
+}
+
+.chapter-tree-popper .el-tree-node__expand-icon.is-leaf {
+  color: transparent;
 }

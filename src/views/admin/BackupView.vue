@@ -38,17 +38,15 @@ const SCOPE_OPTIONS = [
 ];
 
 function handleBackup() {
-  // 接口预留：后端未提供数据备份接口，此处不发起请求
-  ElMessage.info('接口预留：后端未提供数据备份接口');
+  ElMessage.info('备份功能暂未开放，敬请期待');
 }
 
 function handleRestore(r: BackupRow) {
-  ElMessage.info(`接口预留：后端未提供数据恢复接口（目标备份点 ${fmt(r.time)}）`);
+  ElMessage.info(`恢复功能暂未开放（你要恢复的是 ${fmt(r.time)} 的备份点）`);
 }
 
 function handleDownload() {
-  // 接口预留：后端未提供备份文件下载接口
-  ElMessage.info('接口预留：后端未提供备份文件下载接口');
+  ElMessage.info('备份文件下载暂未开放，敬请期待');
 }
 
 function fmt(iso: string): string {
@@ -75,8 +73,8 @@ function fmt(iso: string): string {
           <div>
             <div class="policy-title">定时备份策略</div>
             <div class="policy-desc">
-              规划：每日 03:00 自动全量备份，保留最近 30 份；周期可在「系统参数」中调整。
-              接口预留：后端未提供数据备份接口，以下操作仅保留界面骨架。
+              每日 03:00 自动全量备份，保留最近 30 份；备份周期可在「系统参数」中调整。
+              该功能正在建设中，暂不可用，当前展示的是页面结构预览。
             </div>
             <el-checkbox-group v-model="scope" class="scope-group">
               <el-checkbox v-for="o in SCOPE_OPTIONS" :key="o.value" :value="o.value" :label="o.value">
@@ -97,7 +95,7 @@ function fmt(iso: string): string {
         <DatabaseBackup :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">备份记录</h2>
-          <p class="st-card__hint">共 {{ backups.length }} 份 · 接口预留，暂无数据来源</p>
+          <p class="st-card__hint">共 {{ backups.length }} 份备份记录</p>
         </div>
       </div>
       <div class="table-wrap">
@@ -151,7 +149,7 @@ function fmt(iso: string): string {
         </table>
         <div v-if="backups.length === 0" class="st-empty">
           <DatabaseBackup :size="38" :stroke-width="1.2" class="st-empty__icon" />
-          <div class="st-empty__text">暂无备份记录 · 接口预留：后端未提供数据备份接口</div>
+          <div class="st-empty__text">还没有备份记录，功能上线后会在这里列出</div>
         </div>
       </div>
     </div>
@@ -163,7 +161,7 @@ function fmt(iso: string): string {
         <ul class="restore-note__list">
           <li>恢复将覆盖当前业务数据，需二次确认并记录操作人。</li>
           <li>恢复期间建议暂停写入，预计耗时约 1 分钟。</li>
-          <li>接口预留：后端需提供备份可用性校验与恢复进度回调，前端方可安全开放该入口。</li>
+          <li>恢复功能上线前，该入口暂不开放，避免误操作影响业务数据。</li>
         </ul>
       </div>
     </div>
