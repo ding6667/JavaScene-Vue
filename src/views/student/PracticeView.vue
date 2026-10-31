@@ -1,44 +1,24 @@
 <script setup lang="ts">
 /**
- * 分层刷题练习
+ * 分层刷题练习 —— 题目列表页
  *
- * 已对接：@/api/exam.fetchPracticeList            GET  /api/exam/question/practice/list
- * 已对接：@/api/exam.fetchPracticeDetail          GET  /api/exam/question/practice/detail/{id}
- * 已接桩：待实现 @/api/study.savePracticeDraft    POST /api/study/practice/draft（本页做 1s 节流，接口幂等）
- * 已接桩：待实现 @/api/study.submitPractice       POST /api/study/practice/submit
- * 已对接：@/api/knowledge.fetchChapters          GET  /api/knowledge/chapter/list（章节下拉）
+ * 已对接：
+ *   GET /api/exam/question/practice/list    刷题列表
+ *   GET /api/knowledge/chapter/list         章节下拉
+ *   GET /api/exam/difficulty-config/list    难度下拉（只读，403 时降级为空，不踢人）
  *
- * 说明：
- * 1. 题型 / 难度码值与后端枚举一致：题型 1=选择 2=填空 3=判断 4=程序阅读 5=编程 6=简答；
- *    难度 1=基础 2=进阶 3=拔高；practiceMode（练习模式）默认 1。
- * 2. 错题本由后端在判错时自动写入（@/api/study.submitPractice 的副作用），前端只做提示，不重复上报。
- * 3. 支持从错题本跳转：/student/practice?questionId=xxx 直接打开指定题目。
+ * 作答已抽离成独立页面（PracticeSolveView）：点击题目在新标签页打开，
+ * 一面放题目信息、一面放作答区，编程题在作答页里直接跑代码与智能纠错。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import {
-  BookMarked,
-  CircleAlert,
-  CircleCheck,
-  CircleX,
-  History,
-  ListChecks,
-  Loader2,
-  RotateCcw,
-  Save,
-  Send,
-} from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
-import CodeEditor from '@/components/student/CodeEditor.vue';
-import { fetchChapters } from '@/api/knowledge';
-import { fetchPracticeDetail, fetchPracticeList } from '@/api/exam';
-import { savePracticeDraft, submitPractice } from '@/api/study';
-import type { Chapter } from '@/types/knowledge';
-import type { PracticeQuestionDetail, PracticeQuestionItem } from '@/types/exam';
-import type { PracticeSubmitResult } from '@/types/study';
-
-/** 草稿节流窗口（毫秒）：窗口内的连续输入合并为一次 savePracticeDraft */
-const DRAFT_THROTTLE_MS = 1000;
+import { CircleAlert, ExternalLink, ListChecks, Loader2, RotateCcw } from 'lucide-vue-next';
+import { fetchPracticeList } from '@/api/exam';
+import ChapterSelect from '@/components/ChapterSelect.vue';
+import { useChapters } from '@/composables/useChapters';
+import { useDifficultyConfigs } from '@/composables/useDifficultyConfigs';
+import type { PracticeQuestionItem } from '@/types/exam';
 
 /** 题型码值 → 中文标签（与后端 QuestionTypeEnum 一致） */
 const TYPE_LABELS: Record<number, string> = {
@@ -50,14 +30,6 @@ const TYPE_LABELS: Record<number, string> = {
   6: '简答题',
 };
 
-/** 难度码值 → 中文标签（与后端 QuestionDifficultyEnum 一致） */
-const DIFFICULTY_LABELS: Record<number, string> = {
-  1: '基础',
-  2: '进阶',
-  3: '拔高',
-};
-
-/** 练习模式码值（practiceMode，后端未给出语义，待确认） */
 const PRACTICE_MODES = [
   { value: 1, label: '章节专项' },
   { value: 2, label: '随机刷题' },
@@ -66,26 +38,28 @@ const PRACTICE_MODES = [
 
 const PAGE_SIZES = [10, 20, 50];
 
-/** 作答控件类型：由题型码值 + 下发数据（options / codeFramework）共同决定 */
-type AnswerKind = 'choice' | 'text' | 'code';
-
 const route = useRoute();
 const router = useRouter();
 
-/** 桩抛错与真实请求失败的统一文案 */
-function describeError(apiPath: string, e: unknown): string {
+const difficultyStore = useDifficultyConfigs();
+const difficultyOptions = difficultyStore.options;
+const difficultyError = difficultyStore.error;
+const difficultyText = difficultyStore.difficultyText;
+
+function describeError(what: string, e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  return /未实现/.test(msg) ? `接口待实现：${apiPath}` : `接口调用失败：${apiPath}（${msg}）`;
+  return /未实现/.test(msg) ? `${what}暂未开放` : `${what}失败：${msg}`;
 }
 
 // ==================== 筛选与列表 ====================
 
-const chapters = ref<Chapter[]>([]);
+/** 章节数据（<ChapterSelect> 也会自动加载，这里只是等它就绪再出列表，避免下拉空一帧） */
+const { load: chaptersReady } = useChapters();
 
 const filters = reactive({
   chapterId: 0,
   type: 0,
-  difficulty: 0,
+  difficultyConfigId: 0,
   onlyUndone: false,
   pageNum: 1,
   pageSize: 10,
@@ -97,7 +71,6 @@ const total = ref<number | null>(null);
 const loadingList = ref(false);
 const listError = ref<string | null>(null);
 
-/** 总页数（后端未返回 total 时按当前页条数推算） */
 const pageCount = computed(() => {
   const t = total.value;
   if (t === null || t <= 0) return 0;
@@ -108,23 +81,17 @@ function typeLabel(v: number): string {
   return TYPE_LABELS[v] ?? `题型 ${v}`;
 }
 
-function difficultyLabel(v: number): string {
-  return DIFFICULTY_LABELS[v] ?? `难度 ${v}`;
-}
-
 function acceptanceText(rate: number | null | undefined): string {
   if (rate === null || rate === undefined || Number.isNaN(Number(rate))) return '—';
-  // 后端 acceptanceRate 为百分数（0~100）
   return `${Math.max(0, Math.min(100, Math.round(Number(rate))))}%`;
 }
 
-async function loadChapters() {
-  try {
-    chapters.value = await fetchChapters();
-  } catch {
-    // 真实接口失败，错误已由响应拦截器统一提示，章节下拉保持为空
-    chapters.value = [];
-  }
+/** 标题口径：shortTitle 优先，为空退回题干截断 */
+function questionTitle(q: PracticeQuestionItem): string {
+  const short = String(q.shortTitle ?? '').trim();
+  if (short) return short;
+  const text = String(q.content ?? '').trim() || '—';
+  return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
 async function loadQuestions() {
@@ -134,20 +101,32 @@ async function loadQuestions() {
     const page = await fetchPracticeList({
       chapterId: filters.chapterId || undefined,
       type: filters.type || undefined,
-      difficulty: filters.difficulty || undefined,
+      difficultyConfigId: filters.difficultyConfigId || undefined,
       onlyUndone: filters.onlyUndone,
       pageNum: filters.pageNum,
       pageSize: filters.pageSize,
     });
-    questions.value = Array.isArray(page?.records) ? page.records : [];
+    questions.value = Array.isArray(page?.records) ? page.records.map(normalizePracticeItem) : [];
     total.value = Number(page?.total ?? questions.value.length);
   } catch (e) {
     questions.value = [];
     total.value = null;
-    listError.value = describeError('@/api/exam.fetchPracticeList', e);
+    listError.value = describeError('练习列表加载', e);
   } finally {
     loadingList.value = false;
   }
+}
+
+/**
+ * 列表项兜底：个别后端版本把主键叫 questionId。
+ * 主键为空时整行链接就没法生成，表现成「点了没反应」，这里先补齐。
+ */
+function normalizePracticeItem(raw: PracticeQuestionItem): PracticeQuestionItem {
+  const src = raw as PracticeQuestionItem & { questionId?: number | string | null };
+  if (!src.id && src.questionId) {
+    return { ...raw, id: src.questionId as number };
+  }
+  return raw;
 }
 
 function applyFilters() {
@@ -162,269 +141,65 @@ function goPage(next: number) {
   void loadQuestions();
 }
 
-// ==================== 详情与作答 ====================
+// ==================== 打开作答页（新标签） ====================
 
-const selectedId = ref<number | null>(null);
-const detail = ref<PracticeQuestionDetail | null>(null);
-const loadingDetail = ref(false);
-const detailError = ref<string | null>(null);
-
-const selectedChoice = ref<string[]>([]);
-const textAnswer = ref('');
-const code = ref('');
-
-/** 每题提交次数（提交时作为 attemptCount 上报） */
-const attemptCounts = reactive<Record<number, number>>({});
-/** 当前题目开始作答时间，用于 duration */
-let answerStartedAt = Date.now();
-
-const answerKind = computed<AnswerKind>(() => {
-  const d = detail.value;
-  if (!d) return 'text';
-  const t = Number(d.type);
-  if (Array.isArray(d.options) && d.options.length > 0) return 'choice';
-  if (t === 5 || (typeof d.codeFramework === 'string' && d.codeFramework.trim() !== '')) return 'code';
-  return 'text';
-});
-
-/** 后端 type=1 未区分单选/多选，选择题按可多选交互（只选一项也合法） */
-const isMultiChoice = computed(() => Number(detail.value?.type) === 1);
-
-/** 选项展示字母（后端 options 为字符串数组，可能自带 "A." 前缀） */
-function optionText(opt: string, idx: number): string {
-  const raw = typeof opt === 'string' ? opt : String(opt ?? '');
-  const stripped = raw.replace(/^\s*[A-Za-z]\s*[.、)．）:：]\s*/, '');
-  return `${String.fromCharCode(65 + idx)}. ${stripped}`;
-}
-
-/** 作答内容：客观题存选项原文（多选用英文逗号拼接），填空题存文本，编程题存源码 */
-function buildAnswerContent(): string {
-  switch (answerKind.value) {
-    case 'choice':
-      return selectedChoice.value.join(',');
-    case 'code':
-      return code.value;
-    default:
-      return textAnswer.value;
-  }
-}
-
-const answerContent = computed(() => buildAnswerContent());
-const canSubmit = computed(() => !!detail.value && answerContent.value.trim() !== '' && !submitting.value);
-
-function resetAnswerBoxes(d: PracticeQuestionDetail) {
-  const last = typeof d.lastAnswer === 'string' ? d.lastAnswer : '';
-  selectedChoice.value = last.includes(',') ? last.split(',').map((s) => s.trim()).filter(Boolean) : last ? [last] : [];
-  textAnswer.value = answerKind.value === 'text' ? last : '';
-  code.value = answerKind.value === 'code' ? last || (d.codeFramework ?? '') : '';
-  answerStartedAt = Date.now();
-}
-
-async function selectQuestion(id: number) {
-  // 切换题目时丢弃尚未发出的节流草稿，避免把上一题的内容写进新题
-  clearDraftTimer();
-  loadingDetail.value = true;
-  detailError.value = null;
-  detail.value = null;
-  result.value = null;
-  submitError.value = null;
-  selectedId.value = id;
-  draftState.value = 'idle';
-  draftHint.value = '编辑内容后 1s 内自动保存草稿';
+/**
+ * 作答页链接。
+ *
+ * id 可能是 number，也可能是后端把 Long 序列化成字符串后的 "1943..."：
+ * 统一按字符串原样透传，不做 Number.isFinite 之类的数值校验——
+ * 字符串 id 一旦被数值校验判成非法，点击就会静默无反应。
+ */
+function solveHref(id: number | string | null | undefined): string {
+  const raw = String(id ?? '').trim();
+  if (!raw) return '';
   try {
-    const d = await fetchPracticeDetail(id);
-    detail.value = d;
-    resetAnswerBoxes(d);
-  } catch (e) {
-    detailError.value = describeError('@/api/exam.fetchPracticeDetail', e);
-  } finally {
-    loadingDetail.value = false;
-  }
-}
-
-// ==================== 草稿（1s 节流，接口幂等） ====================
-
-type DraftState = 'idle' | 'queued' | 'saving' | 'saved' | 'error';
-
-const draftState = ref<DraftState>('idle');
-const draftHint = ref('编辑内容后 1s 内自动保存草稿');
-
-let draftTimer: ReturnType<typeof setTimeout> | null = null;
-let draftInFlight = false;
-let lastDraftAt = 0;
-let lastSavedDraftContent = '';
-
-function clearDraftTimer() {
-  if (draftTimer) {
-    clearTimeout(draftTimer);
-    draftTimer = null;
+    return router.resolve({
+      name: 'StudentPracticeSolve',
+      params: { questionId: raw },
+      query: { practiceMode: String(filters.practiceMode) },
+    }).href;
+  } catch {
+    // 路由表异常时的手工兜底，保证入口始终可用
+    return `/student/practice/solve/${encodeURIComponent(raw)}?practiceMode=${filters.practiceMode}`;
   }
 }
 
 /**
- * 输入即触发：距上次保存已满 1s 立即发；未满 1s 只挂一个尾部定时器，
- * 窗口内的多次输入合并成一次请求（接口幂等，重复内容直接跳过）。
+ * 行点击兜底：正常情况下 <a target="_blank"> 自己完成跳转，这里不拦截；
+ * 只有生成不出链接（题目编号缺失）时才拦下并给一句人话，避免「点了没反应」。
  */
-function scheduleDraftSave() {
-  if (!detail.value || !selectedId.value) return;
-  const elapsed = Date.now() - lastDraftAt;
-  if (elapsed >= DRAFT_THROTTLE_MS && !draftInFlight) {
-    void flushDraft(false);
-    return;
-  }
-  draftState.value = 'queued';
-  if (draftTimer) return;
-  draftTimer = setTimeout(() => {
-    draftTimer = null;
-    void flushDraft(false);
-  }, DRAFT_THROTTLE_MS - elapsed);
-}
-
-async function flushDraft(manual: boolean) {
-  const d = detail.value;
-  const qid = selectedId.value;
-  if (!d || !qid) return;
-  if (draftInFlight) {
-    if (manual) ElMessage.info('草稿保存中，请稍候');
-    return;
-  }
-  const content = buildAnswerContent();
-  if (content.trim() === '') {
-    if (manual) ElMessage.warning('作答内容为空，未保存草稿');
-    return;
-  }
-  if (content === lastSavedDraftContent && !manual) return;
-  clearDraftTimer();
-  draftInFlight = true;
-  draftState.value = 'saving';
-  try {
-    await savePracticeDraft({
-      questionId: qid,
-      answerContent: content,
-      chapterId: typeof d.chapterId === 'number' ? d.chapterId : undefined,
-    });
-    lastSavedDraftContent = content;
-    lastDraftAt = Date.now();
-    draftState.value = 'saved';
-    draftHint.value = `草稿已于 ${new Date().toLocaleTimeString()} 保存（1s 节流）`;
-    if (manual) ElMessage.success('草稿已保存');
-  } catch (e) {
-    lastDraftAt = Date.now();
-    draftState.value = 'error';
-    draftHint.value = describeError('@/api/study.savePracticeDraft', e);
-    if (manual) ElMessage.error(draftHint.value);
-  } finally {
-    draftInFlight = false;
-  }
-}
-
-function onAnswerChanged() {
-  scheduleDraftSave();
-}
-
-/** 代码编辑器回传：先落值再进入节流窗口，保证草稿内容与提交内容一致 */
-function onCodeInput(value: string) {
-  code.value = value;
-  scheduleDraftSave();
-}
-
-/** 文本作答回传：同上，先落值再节流保存 */
-function onTextInput(e: Event) {
-  textAnswer.value = (e.target as HTMLTextAreaElement).value;
-  scheduleDraftSave();
-}
-
-function toggleChoice(value: string) {
-  if (isMultiChoice.value) {
-    const set = new Set(selectedChoice.value);
-    if (set.has(value)) set.delete(value);
-    else set.add(value);
-    selectedChoice.value = [...set];
-  } else {
-    selectedChoice.value = [value];
-  }
-  onAnswerChanged();
-}
-
-// ==================== 正式提交 ====================
-
-const submitting = ref(false);
-const result = ref<PracticeSubmitResult | null>(null);
-const submitError = ref<string | null>(null);
-
-const resultPassed = computed(() => Number(result.value?.isCorrect) === 1);
-
-/** 判题状态里的错误行（供 CodeEditor 标注） */
-const errorLines = computed<number[]>(() => {
-  const line = Number(result.value?.errorLine);
-  return Number.isFinite(line) && line > 0 ? [line] : [];
-});
-
-function casePassed(c: { passed?: number }): boolean {
-  return Number(c.passed) === 1;
-}
-
-async function handleSubmit() {
-  const qid = selectedId.value;
-  if (!qid || !detail.value) {
-    ElMessage.warning('请先在左侧选择题目');
-    return;
-  }
-  const content = buildAnswerContent();
-  if (content.trim() === '') {
-    ElMessage.warning('请先作答再提交');
-    return;
-  }
-  clearDraftTimer();
-  submitting.value = true;
-  submitError.value = null;
-  result.value = null;
-  const attemptCount = (attemptCounts[qid] ?? 0) + 1;
-  try {
-    const r = await submitPractice({
-      questionId: qid,
-      answerContent: content,
-      duration: Math.max(0, Math.round((Date.now() - answerStartedAt) / 1000)),
-      attemptCount,
-      practiceMode: filters.practiceMode,
-    });
-    result.value = r;
-    attemptCounts[qid] = attemptCount;
-    lastSavedDraftContent = content;
-    if (Number(r.isCorrect) === 1) {
-      ElMessage.success(`判题通过，得分 ${r.score ?? 0}`);
-    } else {
-      ElMessage.warning('本题判错，已由后端计入错题本');
-    }
-  } catch (e) {
-    attemptCounts[qid] = attemptCount;
-    submitError.value = describeError('@/api/study.submitPractice', e);
-    ElMessage.error(submitError.value);
-  } finally {
-    submitting.value = false;
-  }
+function onItemClick(event: MouseEvent, id: number | string | null | undefined) {
+  if (solveHref(id)) return;
+  event.preventDefault();
+  ElMessage.warning('该题目缺少编号，暂时无法打开作答页');
 }
 
 onMounted(async () => {
   const paramChapter = Number(route.params.chapterId);
   if (Number.isFinite(paramChapter) && paramChapter > 0) filters.chapterId = paramChapter;
-  await loadChapters();
+  difficultyStore.load();
+  await chaptersReady();
   await loadQuestions();
 
-  const queryQuestion = Number(route.query.questionId);
-  if (Number.isFinite(queryQuestion) && queryQuestion > 0) void selectQuestion(queryQuestion);
-});
-
-onBeforeUnmount(() => {
-  clearDraftTimer();
+  // 兼容旧链接（如从错题本带到 /student/practice?questionId=5）：直接替换到作答页。
+  // 这里不能用 window.open——onMounted 已脱离用户手势，新标签会被浏览器拦掉，看着像没反应。
+  const queryQuestion = String(route.query.questionId ?? '').trim();
+  if (queryQuestion) {
+    const href = solveHref(queryQuestion);
+    if (href) {
+      void router.replace(href);
+      return;
+    }
+  }
 });
 </script>
 
 <template>
   <div class="st-view">
     <header class="st-page-header">
-      <h1 class="st-page-title">分层刷题练习</h1>
-      <p class="st-page-subtitle">同步教材课后习题 · 题型 / 难度按码值筛选 · 答错自动收录错题本</p>
+      <h1 class="st-page-title">自由刷题</h1>
+      <p class="st-page-subtitle">你可以自由选择刷题</p>
     </header>
 
     <!-- ==================== 筛选 ==================== -->
@@ -432,28 +207,34 @@ onBeforeUnmount(() => {
       <div class="st-card__body">
         <div class="filter-grid">
           <div class="filter-item">
-            <label class="filter-label">章节（chapterId）</label>
-            <el-select v-model="filters.chapterId" style="width: 100%;" @change="applyFilters">
-              <el-option label="全部章节" :value="0" />
-              <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode} ${c.title}`" :value="c.id" />
-            </el-select>
+            <label class="filter-label">章节</label>
+            <ChapterSelect v-model="filters.chapterId" allow-all style="width: 100%;" @change="applyFilters" />
           </div>
           <div class="filter-item">
-            <label class="filter-label">题型（type 码值）</label>
+            <label class="filter-label">题型</label>
             <el-select v-model="filters.type" style="width: 100%;" @change="applyFilters">
               <el-option label="全部题型" :value="0" />
               <el-option v-for="(label, key) in TYPE_LABELS" :key="key" :label="`${key} · ${label}`" :value="Number(key)" />
             </el-select>
           </div>
           <div class="filter-item">
-            <label class="filter-label">难度（difficulty 码值）</label>
-            <el-select v-model="filters.difficulty" style="width: 100%;" @change="applyFilters">
+            <label class="filter-label">难度</label>
+            <el-select
+              v-model="filters.difficultyConfigId"
+              style="width: 100%;"
+              :disabled="!difficultyOptions.length"
+              @change="applyFilters"
+            >
               <el-option label="全部难度" :value="0" />
-              <el-option v-for="(label, key) in DIFFICULTY_LABELS" :key="key" :label="`${key} · ${label}`" :value="Number(key)" />
+              <el-option v-for="d in difficultyOptions" :key="d.value" :label="d.label" :value="d.value" />
             </el-select>
+            <!-- 难度档位来自后端配置表，学生端只读；拿不到时不阻塞刷题，按章节/题型筛选照样可用 -->
+            <p v-if="difficultyError && !difficultyOptions.length" class="filter-note">
+              难度筛选项暂不可用
+            </p>
           </div>
           <div class="filter-item">
-            <label class="filter-label">练习模式（practiceMode 码值，仅随提交上报）</label>
+            <label class="filter-label">练习模式</label>
             <div class="st-seg">
               <div
                 class="st-seg__slider"
@@ -475,20 +256,16 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="filter-item">
-            <label class="filter-label">每页条数（pageSize）</label>
+            <label class="filter-label">每页条数</label>
             <el-select v-model="filters.pageSize" style="width: 100%;" @change="applyFilters">
               <el-option v-for="s in PAGE_SIZES" :key="s" :label="`${s} 条/页`" :value="s" />
             </el-select>
           </div>
           <div class="filter-item filter-item--switch">
-            <label class="filter-label">仅刷未做（onlyUndone）</label>
+            <label class="filter-label">仅刷未做</label>
             <el-switch v-model="filters.onlyUndone" @change="applyFilters" />
           </div>
         </div>
-
-        <p class="code-value-note">
-          题型 / 难度 / 练习模式后端只下发码值（数字），本页标签映射表与后端枚举一致（题型 1~6、难度 1~3）。
-        </p>
 
         <div class="filter-actions">
           <button class="st-btn st-btn--secondary" :disabled="loadingList" @click="loadQuestions">
@@ -500,298 +277,73 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="practice-grid">
-      <!-- ==================== 题目列表 ==================== -->
-      <section class="st-card">
-        <div class="st-card__header">
-          <ListChecks :size="15" class="card-icon" />
-          <div>
-            <h2 class="st-card__title">题目列表</h2>
-            <p class="st-card__hint">已对接 @/api/exam.fetchPracticeList</p>
-          </div>
-          <span class="list-count">共 {{ total === null ? '—' : total }} 题</span>
+    <!-- ==================== 题目列表 ==================== -->
+    <section class="st-card">
+      <div class="st-card__header">
+        <ListChecks :size="15" class="card-icon" />
+        <div>
+          <h2 class="st-card__title">题目列表</h2>
         </div>
-        <div class="st-card__body" style="padding-top: 12px;">
-          <div v-if="loadingList" class="st-empty">
-            <Loader2 :size="30" :stroke-width="1.4" class="st-empty__icon spin" />
-            <div class="st-empty__text">列表加载中…</div>
-          </div>
-          <div v-else-if="listError" class="st-empty">
-            <CircleAlert :size="32" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">{{ listError }}</div>
-            <button class="st-btn st-btn--secondary" @click="loadQuestions">重新加载</button>
-          </div>
-          <div v-else-if="questions.length === 0" class="st-empty">
-            <ListChecks :size="32" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">该筛选条件下暂无题目</div>
-            <button class="st-btn st-btn--secondary" @click="loadQuestions">重新加载</button>
-          </div>
-
-          <div v-else class="question-list">
-            <div
-              v-for="(q, i) in questions"
-              :key="q.id"
-              class="question-item"
-              :class="{ 'question-item--active': q.id === selectedId }"
-              role="button"
-              tabindex="0"
-              @click="selectQuestion(q.id)"
-              @keydown.enter="selectQuestion(q.id)"
-            >
-              <span class="question-no">{{ (filters.pageNum - 1) * filters.pageSize + i + 1 }}</span>
-              <div class="question-item__main">
-                <div class="question-item__content">{{ q.content || '—' }}</div>
-                <div class="question-item__badges">
-                  <span class="st-badge st-badge--outline">{{ typeLabel(q.type) }}</span>
-                  <span class="st-badge st-badge--neutral">{{ difficultyLabel(q.difficulty) }}</span>
-                  <span class="st-badge st-badge--neutral">{{ q.score ?? '—' }} 分</span>
-                  <span class="st-badge" :class="q.done ? 'st-badge--info' : 'st-badge--neutral'">
-                    {{ q.done ? '已做过' : '未做' }}
-                  </span>
-                </div>
-              </div>
-              <div class="question-item__rate">
-                <span>通过率 {{ acceptanceText(q.acceptanceRate) }}</span>
-                <span>提交 {{ q.submitCount ?? 0 }} 次</span>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="!loadingList && pageCount > 0" class="pager">
-            <button class="st-text-btn" :disabled="filters.pageNum <= 1" @click="goPage(filters.pageNum - 1)">上一页</button>
-            <span class="pager__info">第 {{ filters.pageNum }} / {{ pageCount }} 页</span>
-            <button class="st-text-btn" :disabled="filters.pageNum >= pageCount" @click="goPage(filters.pageNum + 1)">下一页</button>
-          </div>
+        <span class="list-count">共 {{ total === null ? '—' : total }} 题</span>
+      </div>
+      <div class="st-card__body" style="padding-top: 12px;">
+        <div v-if="loadingList" class="st-empty">
+          <Loader2 :size="30" :stroke-width="1.4" class="st-empty__icon spin" />
+          <div class="st-empty__text">列表加载中…</div>
         </div>
-      </section>
+        <div v-else-if="listError" class="st-empty">
+          <CircleAlert :size="32" :stroke-width="1.2" class="st-empty__icon" />
+          <div class="st-empty__text">{{ listError }}</div>
+          <button class="st-btn st-btn--secondary" @click="loadQuestions">重新加载</button>
+        </div>
+        <div v-else-if="questions.length === 0" class="st-empty">
+          <ListChecks :size="32" :stroke-width="1.2" class="st-empty__icon" />
+          <div class="st-empty__text">该筛选条件下暂无题目</div>
+          <button class="st-btn st-btn--secondary" @click="loadQuestions">重新加载</button>
+        </div>
 
-      <!-- ==================== 详情 + 作答 ==================== -->
-      <section class="st-card">
-        <div class="st-card__header">
-          <BookMarked :size="15" class="card-icon" />
-          <div>
-            <h2 class="st-card__title">题目与作答</h2>
-            <p class="st-card__hint">已对接 @/api/exam.fetchPracticeDetail</p>
-          </div>
-          <button
-            v-if="detail"
-            class="st-text-btn"
-            style="margin-left: auto;"
-            @click="router.push({ path: '/student/wrong' })"
+        <div v-else class="question-list">
+          <!-- 每行是原生链接：点击/中键/右键新标签都由浏览器处理，不会被弹窗拦截吃掉 -->
+          <a
+            v-for="(q, i) in questions"
+            :key="q.id"
+            class="question-item"
+            :href="solveHref(q.id)"
+            target="_blank"
+            rel="noopener noreferrer"
+            :title="`在新标签页作答：${questionTitle(q)}`"
+            @click="onItemClick($event, q.id)"
           >
-            <History :size="12" style="margin-right: 2px;" /> 错题本
-          </button>
+            <span class="question-no">{{ (filters.pageNum - 1) * filters.pageSize + i + 1 }}</span>
+            <div class="question-item__main">
+              <div class="question-item__title">
+                {{ questionTitle(q) }}
+                <ExternalLink :size="12" class="open-icon" />
+              </div>
+              <div v-if="q.shortTitle" class="question-item__content">{{ q.content || '—' }}</div>
+              <div class="question-item__badges">
+                <span class="st-badge st-badge--outline">{{ typeLabel(q.type) }}</span>
+                <span class="st-badge st-badge--neutral">{{ difficultyText(q) }}</span>
+                <span class="st-badge st-badge--neutral">{{ q.score ?? '—' }} 分</span>
+                <span class="st-badge" :class="q.done ? 'st-badge--info' : 'st-badge--neutral'">
+                  {{ q.done ? '已做过' : '未做' }}
+                </span>
+              </div>
+            </div>
+            <div class="question-item__rate">
+              <span>通过率 {{ acceptanceText(q.acceptanceRate) }}</span>
+              <span>提交 {{ q.submitCount ?? 0 }} 次</span>
+            </div>
+          </a>
         </div>
-        <div class="st-card__body">
-          <div v-if="loadingDetail" class="st-empty">
-            <Loader2 :size="30" :stroke-width="1.4" class="st-empty__icon spin" />
-            <div class="st-empty__text">题目详情加载中…</div>
-          </div>
-          <div v-else-if="detailError" class="st-empty">
-            <CircleAlert :size="32" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">{{ detailError }}</div>
-            <button class="st-btn st-btn--secondary" :disabled="!selectedId" @click="selectedId && selectQuestion(selectedId)">
-              重新加载
-            </button>
-          </div>
-          <div v-else-if="!detail" class="st-empty">
-            <BookMarked :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">请先在左侧列表选择题目</div>
-          </div>
 
-          <template v-else>
-            <!-- 题干 -->
-            <div class="question-stem">
-              <span class="question-no question-no--lg">{{ detail.id }}</span>
-              <div>
-                <div class="question-stem__text">{{ detail.content || '—' }}</div>
-                <div class="question-item__badges" style="margin-top: 10px;">
-                  <span class="st-badge st-badge--outline">{{ typeLabel(detail.type) }}</span>
-                  <span class="st-badge st-badge--neutral">{{ difficultyLabel(detail.difficulty) }}</span>
-                  <span class="st-badge st-badge--neutral">{{ detail.score ?? '—' }} 分</span>
-                  <span class="st-badge st-badge--neutral">通过率 {{ acceptanceText(detail.acceptanceRate) }}</span>
-                  <span class="st-badge" :class="detail.done ? 'st-badge--info' : 'st-badge--neutral'">
-                    {{ detail.done ? '已做过' : '未做' }}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 作答要求 -->
-            <div v-if="detail.requirements?.length" class="req-box">
-              <div class="block-head">作答要求</div>
-              <ol class="req-list">
-                <li v-for="(r, i) in detail.requirements" :key="i">{{ r }}</li>
-              </ol>
-            </div>
-
-            <!-- 示例用例 -->
-            <div v-if="detail.sampleTestCases?.length" class="case-box">
-              <div class="block-head">示例用例</div>
-              <div v-for="(c, i) in detail.sampleTestCases" :key="i" class="case-item">
-                <div class="case-item__desc">{{ c.description || `用例 ${i + 1}` }}</div>
-                <div class="case-item__row st-code">
-                  <span class="case-item__label">输入</span>
-                  <pre>{{ c.input || '—' }}</pre>
-                </div>
-                <div class="case-item__row st-code">
-                  <span class="case-item__label">期望输出</span>
-                  <pre>{{ c.expectedOutput || '—' }}</pre>
-                </div>
-              </div>
-            </div>
-
-            <p v-if="detail.lastAnswer" class="last-answer">
-              上次作答：{{ detail.lastAnswer.slice(0, 120) }}{{ detail.lastAnswer.length > 120 ? '…' : '' }}
-            </p>
-
-            <!-- 作答区：客观题 -->
-            <div v-if="answerKind === 'choice'" class="answer-zone">
-              <div class="block-head">
-                选择答案
-                <span v-if="isMultiChoice" class="zone-tip">可多选，以英文逗号拼接提交</span>
-                <span v-else class="zone-tip">单选</span>
-              </div>
-              <div class="options">
-                <button
-                  v-for="(opt, i) in detail.options"
-                  :key="i"
-                  class="option-item"
-                  :class="{ 'option-item--selected': selectedChoice.includes(opt) }"
-                  @click="toggleChoice(opt)"
-                >
-                  {{ optionText(opt, i) }}
-                </button>
-              </div>
-            </div>
-
-            <!-- 作答区：填空 / 简答 / 阅读题 -->
-            <div v-else-if="answerKind === 'text'" class="answer-zone">
-              <div class="block-head">
-                文本作答
-                <span class="zone-tip">多空请按题目顺序用英文逗号分隔（口径待与后端确认）</span>
-              </div>
-              <textarea
-                :value="textAnswer"
-                class="text-answer__input"
-                rows="6"
-                placeholder="输入你的答案…"
-                @input="onTextInput"
-              ></textarea>
-            </div>
-
-            <!-- 作答区：编程题 -->
-            <div v-else class="answer-zone">
-              <div class="block-head">
-                Java 代码作答
-                <span class="zone-tip">
-                  已用后端 codeFramework 初始化
-                  <button class="st-text-btn" @click="code = detail.codeFramework || ''">重置为框架代码</button>
-                </span>
-              </div>
-              <CodeEditor :model-value="code" :error-lines="errorLines" height="420px" @update:model-value="onCodeInput" />
-            </div>
-
-            <!-- 草稿 + 提交 -->
-            <div class="draft-row">
-              <span class="draft-hint" :class="{ 'draft-hint--error': draftState === 'error' }">
-                <span class="st-badge" :class="draftState === 'error' ? 'st-badge--danger' : 'st-badge--neutral'">
-                  {{ draftState === 'saving' ? '草稿保存中' : draftState === 'queued' ? '待保存（1s 节流）' : draftState === 'saved' ? '草稿已保存' : draftState === 'error' ? '草稿失败' : '草稿未开始' }}
-                </span>
-                {{ draftHint }}
-              </span>
-              <button class="st-btn st-btn--secondary" :disabled="!detail || draftState === 'saving'" @click="flushDraft(true)">
-                <Save :size="13" /> 立即保存草稿
-              </button>
-              <button class="st-btn st-btn--primary" :disabled="!canSubmit" @click="handleSubmit">
-                <Loader2 v-if="submitting" :size="14" class="spin" />
-                <Send v-else :size="13" />
-                {{ submitting ? '提交中…' : '提交作答' }}
-              </button>
-            </div>
-            <p class="attempt-tip">
-              本题本会话已提交 {{ attemptCounts[detail.id] ?? 0 }} 次 · 提交耗时按当前题目打开后的实际秒数上报
-            </p>
-
-            <!-- 提交结果 -->
-            <div v-if="submitError" class="result-error-card">
-              <div class="block-head"><CircleAlert :size="14" /> 提交结果</div>
-              <p class="result-error-text">{{ submitError }}</p>
-              <button class="st-btn st-btn--secondary" @click="handleSubmit">重新提交</button>
-            </div>
-
-            <div v-else-if="result" class="analysis-box">
-              <div class="analysis-verdict" :class="resultPassed ? 'analysis-verdict--ok' : 'analysis-verdict--bad'">
-                <CircleCheck v-if="resultPassed" :size="16" />
-                <CircleX v-else :size="16" />
-                {{ resultPassed ? '判题通过' : '判为错题' }}
-                <span class="st-badge st-badge--outline">{{ result.score ?? 0 }} 分</span>
-                <span class="st-badge st-badge--neutral">
-                  用例 {{ result.passedCount ?? 0 }} / {{ result.totalCount ?? 0 }}
-                </span>
-                <span v-if="!resultPassed" class="wrongbook-tip">已计入错题本（后端记录，可在错题本复盘）</span>
-              </div>
-
-              <div v-if="result.output" class="detail-block">
-                <div class="block-head">运行输出</div>
-                <pre class="code-panel st-code">{{ result.output }}</pre>
-              </div>
-
-              <div v-if="result.errorMsg" class="detail-block">
-                <div class="block-head"><CircleX :size="14" /> 错误信息<template v-if="result.errorLine"> · 第 {{ result.errorLine }} 行</template></div>
-                <pre class="code-panel code-panel--error st-code">{{ result.errorMsg }}</pre>
-                <p v-if="result.errorReason" class="detail-text">{{ result.errorReason }}</p>
-              </div>
-
-              <!-- 逐用例通过情况 -->
-              <div v-if="result.caseResults?.length" class="detail-block">
-                <div class="block-head">逐用例通过情况</div>
-                <table class="case-table">
-                  <thead>
-                    <tr>
-                      <th class="col-idx">用例</th>
-                      <th class="col-res">结果</th>
-                      <th>输入</th>
-                      <th>期望输出</th>
-                      <th>实际输出</th>
-                      <th>错误</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(c, i) in result.caseResults" :key="c.caseIndex ?? i">
-                      <td class="cell-mono">{{ c.caseIndex ?? i + 1 }}</td>
-                      <td>
-                        <span class="st-badge" :class="casePassed(c) ? 'st-badge--success' : 'st-badge--danger'">
-                          {{ casePassed(c) ? '通过' : '未通过' }}
-                        </span>
-                      </td>
-                      <td class="cell-code st-code">{{ c.input || '—' }}</td>
-                      <td class="cell-code st-code">{{ c.expectedOutput || '—' }}</td>
-                      <td class="cell-code st-code">{{ c.actualOutput || '—' }}</td>
-                      <td class="cell-code">{{ c.errorMsg || '—' }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div v-if="result.knowledgePoints?.length" class="kp-row">
-                <span v-for="kp in result.knowledgePoints" :key="kp" class="st-badge st-badge--neutral">{{ kp }}</span>
-              </div>
-
-              <div v-if="result.optimizeSuggest" class="detail-block">
-                <div class="block-head">优化建议</div>
-                <p class="detail-text">{{ result.optimizeSuggest }}</p>
-              </div>
-
-              <div v-if="result.standardIdea" class="detail-block">
-                <div class="block-head">参考思路</div>
-                <p class="detail-text">{{ result.standardIdea }}</p>
-              </div>
-            </div>
-          </template>
+        <div v-if="!loadingList && pageCount > 0" class="pager">
+          <button class="st-text-btn" :disabled="filters.pageNum <= 1" @click="goPage(filters.pageNum - 1)">上一页</button>
+          <span class="pager__info">第 {{ filters.pageNum }} / {{ pageCount }} 页</span>
+          <button class="st-text-btn" :disabled="filters.pageNum >= pageCount" @click="goPage(filters.pageNum + 1)">下一页</button>
         </div>
-      </section>
-    </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -826,7 +378,17 @@ onBeforeUnmount(() => {
   margin-bottom: 6px;
 }
 
-.code-value-note {
+.filter-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.list-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 14px 0 0;
   font-size: 12px;
   line-height: 1.6;
@@ -849,19 +411,6 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.practice-grid {
-  display: grid;
-  grid-template-columns: 1fr 1.45fr;
-  gap: 20px;
-  align-items: start;
-}
-
-@media (max-width: 1080px) {
-  .practice-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 .list-count {
   margin-left: auto;
   font-size: 12px;
@@ -879,17 +428,26 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px 0;
+  padding: 12px 10px;
   border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   cursor: pointer;
+  /* 行是 <a>：清掉浏览器默认的下划线与链接色，外观与卡片一致 */
+  color: inherit;
+  text-decoration: none;
   transition: background var(--transition);
+}
+
+.question-item:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: -2px;
 }
 
 .question-item:last-child {
   border-bottom: none;
 }
 
-.question-item--active {
+.question-item:hover {
   background: var(--bg-subtle);
 }
 
@@ -898,9 +456,31 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.question-item__content {
-  font-size: 13px;
+.question-item__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 500;
   color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.open-icon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.question-item:hover .open-icon {
+  opacity: 1;
+}
+
+.question-item__content {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-tertiary);
   line-height: 1.6;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -939,12 +519,6 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.question-no--lg {
-  width: 34px;
-  height: 34px;
-  font-size: 12.5px;
-}
-
 .pager {
   display: flex;
   align-items: center;
@@ -958,298 +532,6 @@ onBeforeUnmount(() => {
 .pager__info {
   font-size: 12px;
   color: var(--text-tertiary);
-}
-
-/* 详情与作答 */
-.question-stem {
-  display: flex;
-  gap: 14px;
-}
-
-.question-stem__text {
-  font-size: 14px;
-  color: var(--text-primary);
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 8px;
-}
-
-.zone-tip {
-  font-weight: 400;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
-.req-box,
-.case-box {
-  margin-top: 16px;
-}
-
-.req-list {
-  margin: 0;
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.8;
-  color: var(--text-primary);
-}
-
-.case-item {
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  margin-bottom: 10px;
-}
-
-.case-item__desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 6px;
-}
-
-.case-item__row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-}
-
-.case-item__label {
-  color: var(--text-tertiary);
-  font-size: 11.5px;
-  min-width: 60px;
-  flex-shrink: 0;
-}
-
-.case-item__row pre {
-  margin: 0;
-  font-family: inherit;
-  white-space: pre-wrap;
-  color: var(--text-primary);
-}
-
-.last-answer {
-  margin: 14px 0 0;
-  font-size: 12px;
-  color: var(--text-tertiary);
-  background: var(--bg-subtle);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-}
-
-.answer-zone {
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.options {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.option-item {
-  text-align: left;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 10px 14px;
-  font-size: 13.5px;
-  font-family: inherit;
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: all var(--transition);
-  line-height: 1.55;
-}
-
-.option-item:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-subtle);
-}
-
-.option-item--selected {
-  border-color: var(--text-primary);
-  background: var(--bg-subtle);
-  font-weight: 500;
-}
-
-.text-answer__input {
-  width: 100%;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  font-size: 13px;
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  line-height: 1.6;
-  resize: vertical;
-  outline: none;
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  transition: border-color var(--transition);
-}
-
-.text-answer__input:focus {
-  border-color: var(--border-strong);
-}
-
-.draft-row {
-  margin-top: 18px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.draft-hint {
-  flex: 1;
-  min-width: 200px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
-.draft-hint--error {
-  color: var(--status-danger);
-}
-
-.attempt-tip {
-  margin: 8px 0 0;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
-.result-error-card {
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.result-error-text {
-  font-size: 12.5px;
-  color: var(--status-danger);
-  margin: 0 0 10px;
-}
-
-/* 结果 */
-.analysis-box {
-  margin-top: 18px;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 16px;
-}
-
-.analysis-verdict {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  flex-wrap: wrap;
-}
-
-.analysis-verdict--ok {
-  color: var(--status-success);
-}
-
-.analysis-verdict--bad {
-  color: var(--status-danger);
-}
-
-.wrongbook-tip {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.detail-block {
-  margin-top: 14px;
-}
-
-.code-panel {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-  margin: 0;
-  max-height: 240px;
-  overflow: auto;
-  white-space: pre-wrap;
-  color: var(--text-primary);
-}
-
-.code-panel--error {
-  background: var(--status-danger-bg);
-  border-color: rgba(185, 28, 28, 0.18);
-  color: var(--status-danger);
-}
-
-.detail-text {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.7;
-  white-space: pre-wrap;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-}
-
-.case-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-
-.case-table th {
-  text-align: left;
-  font-weight: 600;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-  padding: 0 10px 8px;
-  border-bottom: 1px solid var(--border-default);
-  white-space: nowrap;
-}
-
-.case-table td {
-  padding: 9px 10px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-primary);
-  vertical-align: top;
-}
-
-.col-idx {
-  width: 52px;
-}
-
-.col-res {
-  width: 84px;
-}
-
-.cell-mono {
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.cell-code {
-  word-break: break-all;
-  line-height: 1.55;
-}
-
-.kp-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 14px;
 }
 
 .spin {

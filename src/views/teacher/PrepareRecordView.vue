@@ -19,15 +19,16 @@ import {
   Search,
 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
-import { fetchChapters } from '@/api/knowledge';
 import { downloadPpt, exportLessonPlan, fetchPrepareRecordDetail, fetchPrepareRecords } from '@/api/teacher';
-import type { Chapter } from '@/types/knowledge';
+import ChapterSelect from '@/components/ChapterSelect.vue';
+import { useChapters } from '@/composables/useChapters';
 import type { PrepareRecordDetail, PrepareRecordItem } from '@/types/teacher';
-import { isBlankDocx, saveBlob, saveHtmlAsWord } from '@/utils/download';
+import { isBlankDocx, isBlankPptx, saveBlob, saveHtmlAsWord } from '@/utils/download';
 import { renderMarkdown } from '@/utils/markdown';
 import PrepareMaterialModal from '@/components/teacher/PrepareMaterialModal.vue';
 
-const chapters = ref<Chapter[]>([]);
+/** 章节名回显与筛选下拉共用 useChapters */
+const { findById: findChapter, load: loadChapters } = useChapters();
 const records = ref<PrepareRecordItem[]>([]);
 const total = ref(0);
 const pageNum = ref(1);
@@ -51,8 +52,7 @@ let detailSeq = 0;
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
 
 function chapterTitle(id: number): string {
-  const c = chapters.value.find((x) => x.id === id);
-  return c ? c.title : `章节 ${id}`;
+  return findChapter(id)?.title ?? `章节 ${id}`;
 }
 
 function fmt(iso: string): string {
@@ -137,14 +137,26 @@ async function resolveLessonPlan(recordId: number | string): Promise<string> {
   }
 }
 
+/**
+ * 「材料有无」里的 PPT 口径：后端只要有 pptx_md 正文就算有（hasPptMd），
+ * 文件是否已转出来（hasPpt）不影响——有正文而文件未产出的记录照样可以点下载，由后端按需生成。
+ */
+function hasPptContent(row: PrepareRecordItem): boolean {
+  return !!row.hasPptMd || !!row.hasPpt;
+}
+
+/**
+ * 下载 PPT：入口显隐按 hasPptContent 走（有课件正文就出按钮），点击本身不做前置拦截，
+ * 文件是否就绪、能否现场生成由后端适配，失败交给响应拦截器提示。
+ */
 async function handleDownloadPpt(row: PrepareRecordItem) {
-  if (!row.hasPpt) {
-    ElMessage.info('该记录尚未生成 PPT 文件');
-    return;
-  }
   downloadingId.value = row.id;
   try {
     const blob = await downloadPpt(row.id);
+    if (await isBlankPptx(blob)) {
+      ElMessage.warning('课件文件还没生成好，请稍后再试');
+      return;
+    }
     saveBlob(blob, `备课PPT_第${row.chapterId}章_${row.id}.pptx`);
     ElMessage.success('PPT 已下载');
   } catch {
@@ -189,12 +201,8 @@ function downloadDetailPpt() {
   if (detailRecord.value) handleDownloadPpt(detailRecord.value);
 }
 
-onMounted(async () => {
-  try {
-    chapters.value = await fetchChapters();
-  } catch {
-    // 错误已由响应拦截器统一提示
-  }
+onMounted(() => {
+  void loadChapters();
   loadRecords();
 });
 </script>
@@ -216,9 +224,7 @@ onMounted(async () => {
           <p class="st-card__hint">只列出你自己备课成功的记录 · 共 {{ total }} 条</p>
         </div>
         <div class="header-actions">
-          <el-select v-model="filterChapterId" placeholder="全部章节" clearable filterable style="width: 200px;">
-            <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode || c.id} ${c.title}`" :value="c.id" />
-          </el-select>
+          <ChapterSelect v-model="filterChapterId" placeholder="全部章节" clearable style="width: 200px;" />
           <button class="st-btn st-btn--secondary" :disabled="listLoading" @click="search">
             <Loader2 v-if="listLoading" :size="14" class="spin" />
             <Search v-else :size="14" />
@@ -252,8 +258,8 @@ onMounted(async () => {
                   <span :class="['st-badge', r.hasKeyPoints ? 'st-badge--neutral' : 'st-badge--outline']">重难点</span>
                   <span :class="['st-badge', r.hasHomework ? 'st-badge--neutral' : 'st-badge--outline']">习题</span>
                   <span :class="['st-badge', r.hasLab ? 'st-badge--neutral' : 'st-badge--outline']">实训</span>
-                  <span :class="['st-badge', r.hasPpt ? 'st-badge--dark' : 'st-badge--outline']">
-                    {{ r.hasPpt ? 'PPT 已生成' : '无 PPT 文件' }}
+                  <span :class="['st-badge', hasPptContent(r) ? 'st-badge--dark' : 'st-badge--outline']">
+                    {{ hasPptContent(r) ? 'PPT 已生成' : '无 PPT' }}
                   </span>
                 </div>
               </td>
@@ -269,8 +275,9 @@ onMounted(async () => {
                   导出教案
                 </button>
                 <button
+                  v-if="hasPptContent(r)"
                   class="st-text-btn"
-                  :disabled="!r.hasPpt || downloadingId === r.id"
+                  :disabled="downloadingId === r.id"
                   @click="handleDownloadPpt(r)"
                 >
                   <Loader2 v-if="downloadingId === r.id" :size="12" class="spin" />

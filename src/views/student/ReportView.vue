@@ -164,7 +164,7 @@ const barItems = computed(() =>
           <TrendingUp :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">刷题正确率趋势</h2>
-            <p class="st-card__hint">接口预留：GET /api/exam/wrong-question/list</p>
+            <p class="st-card__hint">按每次练习的得分统计正确率走势</p>
           </div>
         </div>
         <div class="st-card__body">
@@ -186,7 +186,7 @@ const barItems = computed(() =>
           </svg>
           <div v-else class="st-empty">
             <TrendingUp :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">暂无数据，接口待接入</div>
+            <div class="st-empty__text">练习记录还不够，做完几套题就能看到走势</div>
           </div>
         </div>
       </section>
@@ -220,13 +220,13 @@ const barItems = computed(() =>
           </svg>
           <div v-else class="st-empty">
             <Target :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">暂无数据，接口待接入</div>
+            <div class="st-empty__text">还没有可统计的知识点掌握数据</div>
           </div>
         </div>
       </section>
     </div>
 
-    <!-- 各章掌握度（接口预留：GET /api/study/progress/get） -->
+    <!-- 各章掌握度 -->
     <section class="st-card" style="margin-top: 20px;">
       <div class="st-card__header">
         <ListChecks :size="16" class="card-icon" />
@@ -238,7 +238,7 @@ const barItems = computed(() =>
       <div class="st-card__body">
         <div v-if="barItems.length === 0" class="st-empty">
           <ListChecks :size="34" :stroke-width="1.2" class="st-empty__icon" />
-          <div class="st-empty__text">暂无数据，接口待接入</div>
+          <div class="st-empty__text">还没有章节练习数据，先去学几章吧</div>
         </div>
         <div v-else class="bar-chart">
           <div v-for="b in barItems" :key="b.chapterId" class="bar-item">
@@ -265,7 +265,7 @@ const barItems = computed(() =>
         <div class="st-card__body">
           <div v-if="weakPoints.length === 0" class="st-empty">
             <CircleAlert :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">暂无数据，接口待接入</div>
+            <div class="st-empty__text">暂时没有薄弱知识点，继续保持</div>
           </div>
           <div v-else>
             <div v-for="w in weakPoints" :key="w.knowledgePoint" class="weak-item">
@@ -278,7 +278,7 @@ const barItems = computed(() =>
               </div>
               <div class="weak-item__suggestion">{{ w.suggestion }}</div>
               <div class="weak-item__actions">
-                <button class="st-text-btn" @click="router.push(`/student/learn/${w.chapterId}`)">复习第 {{ w.chapterId }} 章 →</button>
+                <button class="st-text-btn" @click="router.push(`/student/learn/${w.chapterId}`)">去看这一章 →</button>
                 <button class="st-text-btn" @click="router.push(`/student/practice/${w.chapterId}`)">刷题巩固 →</button>
               </div>
             </div>
@@ -292,14 +292,14 @@ const barItems = computed(() =>
           <BookOpen :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">学情报告</h2>
-            <p class="st-card__hint">接口预留：GET /api/study/code/record/list</p>
+            <p class="st-card__hint">根据你的学习情况自动生成</p>
           </div>
         </div>
         <div class="st-card__body">
           <div v-if="reportText" class="report-text">{{ reportText }}</div>
           <div v-else class="st-empty">
             <BookOpen :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">暂无数据，接口待接入</div>
+            <div class="st-empty__text">报告还在生成中，完成更多练习后会更准确</div>
           </div>
         </div>
       </section>

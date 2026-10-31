@@ -134,16 +134,13 @@ const router = createRouter({
           component: () => import('@/views/student/QaView.vue'),
         },
         {
-          path: 'code',
-          name: 'StudentCodeLab',
-          component: () => import('@/views/student/CodeLabView.vue'),
-        },
-        {
+          // 智能纠错独立页保留（作答页内已内联同一能力，这里作为独立入口）
           path: 'code/debug',
           name: 'StudentCodeDebug',
           component: () => import('@/views/student/CodeDebugView.vue'),
         },
         {
+          // 注意：作答页（新标签页打开）不在这棵树下，见下方「独立页」路由。
           path: 'practice/:chapterId?',
           name: 'StudentPractice',
           component: () => import('@/views/student/PracticeView.vue'),
@@ -173,6 +170,40 @@ const router = createRouter({
           path: 'account',
           name: 'StudentAccount',
           component: () => import('@/views/AccountView.vue'),
+        },
+      ],
+    },
+    // ==================== 独立页（新标签页打开 · 无侧边栏）====================
+    /**
+     * 模板：凡是用 window.open / target="_blank" 打开的页面都挂到这一类路由上。
+     *   - 父路由组件 = StandaloneLayout（空画布：无侧边栏、无导航，统一留白与滚动）
+     *   - 完整路径写在父路由上，子路由 path 留空，name / props 照旧
+     *   - 这类页面不要再塞进 /student、/admin 的树里，否则会带出侧边栏
+     * 新开页面时复制下面这段、换 path 与 component 即可。
+     */
+    {
+      path: '/student/practice/solve/:questionId',
+      component: () => import('@/views/StandaloneLayout.vue'),
+      meta: { roles: ['STUDENT'], portal: 'student', standalone: true, assistant: true, title: '题目作答' },
+      children: [
+        {
+          path: '',
+          name: 'StudentPracticeSolve',
+          component: () => import('@/views/student/PracticeSolveView.vue'),
+          props: true,
+        },
+      ],
+    },
+    {
+      path: '/student/homework/solve/:homeworkId',
+      component: () => import('@/views/StandaloneLayout.vue'),
+      meta: { roles: ['STUDENT'], portal: 'student', standalone: true, assistant: true, title: '作业作答' },
+      children: [
+        {
+          path: '',
+          name: 'StudentHomeworkSolve',
+          component: () => import('@/views/student/HomeworkSolveView.vue'),
+          props: true,
         },
       ],
     },

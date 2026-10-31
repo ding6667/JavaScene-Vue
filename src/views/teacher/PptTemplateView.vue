@@ -192,7 +192,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">预置外观主题</h2>
           <p class="st-card__hint">
-            主题由后端统一维护，共 {{ themes.length }} 套 · 每张卡片使用同一页示例幻灯片展示实际外观
+            系统内置 {{ themes.length }} 套主题 · 每张卡片使用同一页示例幻灯片展示实际外观
           </p>
         </div>
         <div class="header-actions">
@@ -225,10 +225,6 @@ onMounted(() => {
             </div>
             <header class="theme-item__top">
               <span class="theme-item__name">{{ t.name }}</span>
-              <span class="theme-item__meta">
-                <code class="theme-item__code">{{ t.code }}</code>
-                <span v-if="t.version != null" class="theme-item__ver">v{{ t.version }}</span>
-              </span>
             </header>
             <p v-if="t.description" class="theme-item__desc">{{ t.description }}</p>
           </article>
@@ -332,7 +328,7 @@ onMounted(() => {
               />
             </div>
             <p class="detail-foot">
-              预览按模板绑定的外观主题与骨架内容实时渲染；主题 CSS 由后端统一维护，更新后自动生效。
+              预览按模板绑定的外观主题与骨架内容实时渲染，主题更新后自动生效。
             </p>
           </template>
         </div>
@@ -358,7 +354,7 @@ onMounted(() => {
               </div>
               <div class="form-row">
                 <div class="form-item" style="flex: 1;">
-                  <label class="form-label">外观主题（由后端主题库提供）</label>
+                  <label class="form-label">外观主题</label>
                   <el-select v-model="form.themeCode" placeholder="选择主题" style="width: 100%;">
                     <el-option v-for="t in themes" :key="t.code" :label="`${t.name}（${t.code}）`" :value="t.code" />
                   </el-select>

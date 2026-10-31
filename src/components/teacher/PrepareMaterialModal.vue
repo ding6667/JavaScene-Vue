@@ -73,13 +73,19 @@ const MD_SECTIONS: {
 ];
 
 const slides = computed(() => splitMarkdownSlides(props.detail?.pptxMd ?? ''));
+/** 课件正文（pptxMd）能切出页，才算有可下载 / 可预览的课件内容 */
+const hasPptMd = computed(() => slides.value.length > 0);
 /**
  * PPT 卡的出现口径与备课页保持一致：课件正文能切出页、或有课件文件，就渲染卡片。
- * 列表行的 hasPpt 只代表「.pptx 文件已产出」，只用来决定下载按钮可否点击——
- * 后端先写 pptx_md 再异步转文件，只按 hasPpt 判断会把有大纲没文件的记录判成「无 PPT」。
+ * 下载按钮只在 pptxMd 有内容时出现——pptxMd 为空说明这次备课没有生成任何课件内容，
+ * 后端也变不出文件，直接隐藏入口；文件是否就绪由后端适配，前端只在请求在途时禁用。
  */
 const hasPpt = computed(
-  () => !!props.row?.hasPpt || !!props.detail?.pptxUrl?.trim() || slides.value.length > 0,
+  () =>
+    !!props.row?.hasPptMd ||
+    !!props.row?.hasPpt ||
+    !!props.detail?.pptxUrl?.trim() ||
+    hasPptMd.value,
 );
 
 /** 有几份材料就出几张卡；PPT 固定第一张并独占整行，其余按内容依次排列 */
@@ -434,7 +440,7 @@ onBeforeUnmount(() => {
                   </div>
 
                   <p v-else class="pv-card__empty">
-                    这次备课没有留下课件正文，只能下载已生成的课件文件。
+                    这次备课没有留下课件正文，也没有可下载的 PPT 文件。
                   </p>
                 </div>
 
@@ -464,11 +470,14 @@ onBeforeUnmount(() => {
                     >
                       查看课件文件
                     </a>
-                    <span v-else class="pv-card__foot-hint">下载后可在 PowerPoint / WPS 中继续编辑</span>
+                    <span v-else class="pv-card__foot-hint">
+                      {{ hasPptMd ? '下载后可在 PowerPoint / WPS 中继续编辑' : '本次备课没有留下课件内容' }}
+                    </span>
                     <button
+                      v-if="hasPptMd"
                       class="pv-btn pv-btn--dark"
                       type="button"
-                      :disabled="!row?.hasPpt || downloading"
+                      :disabled="!!downloading"
                       @click="emit('download')"
                     >
                       <Loader2 v-if="downloading" :size="13" class="pv-spin" />

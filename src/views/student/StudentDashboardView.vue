@@ -51,7 +51,7 @@ const completedChapters = ref<number | null>(null);
 const totalChapters = ref<number | null>(null);
 
 const stats = ref<StatCard[]>([
-  { icon: BookOpen, label: '章节完成度', value: '—', sub: '接口待接入', route: '/student/learn' },
+  { icon: BookOpen, label: '章节完成度', value: '—', sub: '章节学习概览', route: '/student/learn' },
   { icon: FileEdit, label: '待完成作业', value: '—', sub: '份作业待提交', route: '/student/homework' },
   { icon: CircleAlert, label: '错题数量', value: '—', sub: '道待复盘巩固', route: '/student/wrong' },
   { icon: ListChecks, label: '累计刷题', value: '—', sub: '道题目已练习', route: '/student/practice' },
@@ -82,7 +82,7 @@ function recLabel(type: Recommendation['type']) {
       <p class="st-page-subtitle">基于《Java 程序设计基础》教材同步学习</p>
     </header>
 
-    <!-- 学习进度总览（接口预留：GET /api/study/progress/get） -->
+    <!-- 学习进度总览 -->
     <div class="st-card overview-card">
       <div class="st-card__body">
         <div class="overview-top">
@@ -91,7 +91,7 @@ function recLabel(type: Recommendation['type']) {
             <div class="overview-sub">
               {{
                 completedChapters === null || totalChapters === null
-                  ? '暂无数据，接口待接入'
+                  ? '还没有学习记录，从第一章开始吧'
                   : `已完成 ${completedChapters} / ${totalChapters} 章`
               }}
             </div>
@@ -133,13 +133,13 @@ function recLabel(type: Recommendation['type']) {
           <ClipboardList :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">待办事项</h2>
-            <p class="st-card__hint">接口预留：GET /api/teach/homework/list</p>
+            <p class="st-card__hint">今天要交的作业和练习会出现在这里</p>
           </div>
         </div>
         <div class="st-card__body">
           <div v-if="todos.length === 0" class="st-empty">
             <ClipboardList :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">暂无数据，接口待接入</div>
+            <div class="st-empty__text">暂无待办，去刷几道题吧</div>
           </div>
           <div v-else class="todo-list">
             <div
@@ -159,7 +159,7 @@ function recLabel(type: Recommendation['type']) {
         </div>
       </section>
 
-      <!-- 个人学情简况（接口预留：GET /api/exam/wrong-question/list） -->
+      <!-- 个人学情简况 -->
       <section class="st-card">
         <div class="st-card__header">
           <TrendingUp :size="16" class="card-icon" />
@@ -171,7 +171,7 @@ function recLabel(type: Recommendation['type']) {
         <div class="st-card__body">
           <div v-if="weakPoints.length === 0" class="st-empty">
             <TrendingUp :size="34" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">暂无数据，接口待接入</div>
+            <div class="st-empty__text">练习数据还不够，先做几套题吧</div>
           </div>
           <div v-else class="weak-list">
             <div v-for="w in weakPoints" :key="w.knowledgePoint" class="weak-item">
@@ -198,13 +198,13 @@ function recLabel(type: Recommendation['type']) {
         <Sparkles :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">推荐学习内容</h2>
-          <p class="st-card__hint">依据学习进度与薄弱点组合推荐（后端暂无推荐接口）</p>
+          <p class="st-card__hint">依据学习进度与薄弱点组合推荐</p>
         </div>
       </div>
       <div class="st-card__body">
         <div v-if="recommendations.length === 0" class="st-empty">
           <Sparkles :size="34" :stroke-width="1.2" class="st-empty__icon" />
-          <div class="st-empty__text">暂无数据，接口待接入</div>
+          <div class="st-empty__text">暂无推荐，先完成一些练习再来看看</div>
         </div>
         <div v-else class="rec-grid">
           <div
@@ -224,19 +224,19 @@ function recLabel(type: Recommendation['type']) {
       </div>
     </section>
 
-    <!-- 近期动态（后端未提供学习行为流水接口） -->
+    <!-- 近期动态 -->
     <section class="st-card" style="margin-top: 20px;">
       <div class="st-card__header">
         <Clock :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">近期学习动态</h2>
-          <p class="st-card__hint">后端未提供行为流水接口，需前端组合进度与代码记录</p>
+          <p class="st-card__hint">最近的学习与刷题记录</p>
         </div>
       </div>
       <div class="st-card__body">
         <div class="st-empty">
           <Clock :size="34" :stroke-width="1.2" class="st-empty__icon" />
-          <div class="st-empty__text">暂无数据，接口待接入</div>
+          <div class="st-empty__text">暂无动态，学习记录会汇总到这里</div>
         </div>
       </div>
     </section>

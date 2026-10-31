@@ -288,7 +288,7 @@ const resettingId = ref<number | null>(null);
 async function handleReset(row: UserListResponse) {
   if (resettingId.value === row.userId) return;
   const name = row.realName || row.username;
-  if (!(await confirmAction(`确定重置「${name}」的登录密码？重置后要用后端下发的新初始密码登录。`, '重置密码'))) {
+  if (!(await confirmAction(`确定重置「${name}」的登录密码？重置后会生成新的初始密码。`, '重置密码'))) {
     return;
   }
   resettingId.value = row.userId;
@@ -301,7 +301,7 @@ async function handleReset(row: UserListResponse) {
     resettingId.value = null;
   }
   if (!newPassword) {
-    ElMessage.warning('密码已提交重置，但接口没有回传新密码，请与后端确认');
+    ElMessage.warning('密码已重置，但系统未返回新密码，请联系管理员手动处理');
     return;
   }
   try {
@@ -435,7 +435,7 @@ function fmt(iso: string | null | undefined): string {
         </div>
         <button v-if="hasActiveFilter" class="st-text-btn" @click="resetFilters">清空筛选</button>
         <div class="toolbar-actions">
-          <button class="st-btn st-btn--secondary" title="POST /api/user/student/batch-add" @click="openImport">
+          <button class="st-btn st-btn--secondary" title="用 Excel 一次导入多名学生" @click="openImport">
             <Upload :size="14" /> 批量导入学生名单
           </button>
           <button class="st-btn st-btn--primary" @click="openCreate">
@@ -459,10 +459,6 @@ function fmt(iso: string | null | undefined): string {
         </button>
       </div>
       <div v-else class="table-wrap">
-        <p class="table-note">
-          GET /api/user/admin/list · pageNum / pageSize / roleId / enabled / classId / keyword，
-          筛选与分页都在后端做；关键字输入防抖 400ms。
-        </p>
         <table class="user-table">
           <thead>
             <tr>
@@ -509,7 +505,7 @@ function fmt(iso: string | null | undefined): string {
                 <button
                   class="st-text-btn"
                   :disabled="resettingId === row.userId"
-                  title="PUT /api/user/password/reset/{userId}"
+                  title="重置该账号的登录密码"
                   @click="handleReset(row)"
                 >
                   <Loader2 v-if="resettingId === row.userId" :size="12" class="spin" style="vertical-align: -2px;" />
@@ -518,7 +514,7 @@ function fmt(iso: string | null | undefined): string {
                 <button
                   class="st-text-btn st-text-btn--danger"
                   :disabled="isSelf(row)"
-                  :title="isSelf(row) ? '不能操作自己' : 'DELETE /api/user/admin/delete/{userId}'"
+                  :title="isSelf(row) ? '不能操作自己' : '删除该账号'"
                   @click="handleDelete(row)"
                 >
                   <Trash2 :size="12" style="vertical-align: -2px;" /> 删除
@@ -528,7 +524,7 @@ function fmt(iso: string | null | undefined): string {
             <tr v-if="users.length === 0">
               <td colspan="9" class="muted" style="text-align: center; padding: 40px 0;">
                 <template v-if="hasActiveFilter">当前筛选条件下没有账号，可清空筛选或换条件重查</template>
-                <template v-else>后端还没有任何账号数据</template>
+                <template v-else>还没有任何账号数据</template>
               </td>
             </tr>
           </tbody>
@@ -574,7 +570,7 @@ function fmt(iso: string | null | undefined): string {
             <h2 class="st-card__title">{{ editing ? '编辑账号' : '新增账号' }}</h2>
             <p class="st-card__hint">
               {{ editing ? `PUT /api/user/admin/${editing.userId}` : 'POST /api/user/admin/add' }}
-              · 初始密码 6-32 位，后端加密存储
+              · 初始密码 6-32 位
             </p>
           </div>
           <div class="st-card__body">
@@ -600,7 +596,7 @@ function fmt(iso: string | null | undefined): string {
             </div>
             <div class="form-row">
               <div class="form-item" style="flex: 1;">
-                <label class="form-label">角色（提交 roleId）</label>
+                <label class="form-label">角色</label>
                 <el-select v-model="form.roleId" style="width: 100%;">
                   <el-option v-for="r in ROLE_OPTIONS" :key="r.value" :label="r.label" :value="r.value" />
                 </el-select>
@@ -627,7 +623,7 @@ function fmt(iso: string | null | undefined): string {
             <!-- create/update 请求体都不含学号与班级，学生档案只能在名册里批量导入 -->
             <div v-if="form.roleId === ROLE_IDS.STUDENT" class="roster-entry">
               <p class="profile-note">
-                账号接口不含学号 / 班级 / 专业：学生的这些档案在学生名册里按班级批量导入，
+                账号里不含学号 / 班级 / 专业：学生的这些档案在学生名册里按班级批量导入，
                 建号与名单分两步，不在这一步里补。
               </p>
               <button class="st-btn st-btn--secondary" @click="goStudentRoster">
@@ -661,7 +657,7 @@ function fmt(iso: string | null | undefined): string {
           <div class="st-card__body">
             <div class="form-row import-tools">
               <div class="form-item">
-                <label class="form-label">目标班级（classId）</label>
+                <label class="form-label">目标班级</label>
                 <el-select v-model="importClassId" placeholder="选择班级" filterable style="width: 100%;">
                   <el-option v-for="c in classes" :key="c.classId" :label="c.className" :value="c.classId" />
                 </el-select>
@@ -669,14 +665,14 @@ function fmt(iso: string | null | undefined): string {
                   {{ classError }}
                   <button class="st-text-btn" @click="loadClasses">重试</button>
                 </p>
-                <p v-else-if="!classes.length" class="field-hint">GET /api/class/list 未返回可见班级</p>
+                <p v-else-if="!classes.length" class="field-hint">当前没有可选的班级</p>
               </div>
               <div class="form-item form-item--narrow">
                 <label class="form-label">导入模板</label>
                 <button
                   class="st-btn st-btn--secondary st-btn--block"
                   :disabled="templateDownloading"
-                  title="GET /api/user/student/import-template"
+                  title="下载学生名单导入模板"
                   @click="handleTemplate"
                 >
                   <Loader2 v-if="templateDownloading" :size="13" class="spin" />
@@ -731,7 +727,7 @@ function fmt(iso: string | null | undefined): string {
                     <td class="col-line mono">{{ f.line }}</td>
                     <td class="mono">{{ f.studentNo || '—' }}</td>
                     <td>{{ f.realName || '—' }}</td>
-                    <td class="muted">{{ f.reason || '后端未给出原因' }}</td>
+                    <td class="muted">{{ f.reason || '未给出原因' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -743,7 +739,7 @@ function fmt(iso: string | null | undefined): string {
               <button
                 class="st-btn st-btn--primary"
                 :disabled="!canImport"
-                :title="importClassId == null ? '请先选择目标班级' : (importFile ? 'POST /api/user/student/batch-add' : '请先选择名单文件')"
+                :title="importClassId == null ? '请先选择目标班级' : (importFile ? '开始导入名单' : '请先选择名单文件')"
                 @click="handleImport"
               >
                 <Loader2 v-if="importing" :size="13" class="spin" />

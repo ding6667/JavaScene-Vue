@@ -267,7 +267,7 @@ onMounted(() => {
           v-model="courseIdFilter"
           :min="1"
           :controls="false"
-          placeholder="课程 ID"
+          placeholder="课程编号"
           style="width: 120px;"
         />
         <div class="search-box">
@@ -275,7 +275,7 @@ onMounted(() => {
           <input v-model="keyword" class="search-input" placeholder="按班级名称过滤（本页内）" />
         </div>
         <span v-if="courseMode === 'id' && courseIdFilter == null" class="filter-hint">
-          GET /api/class/list?courseId= · 填写课程 ID 后查询
+          填写课程编号后查询该课程下的班级
         </span>
         <div class="toolbar-actions">
           <button class="st-btn st-btn--secondary" :disabled="loading" @click="load">
@@ -305,9 +305,8 @@ onMounted(() => {
       </div>
       <div v-else class="table-wrap">
         <p class="table-note">
-          列表来自 GET /api/class/list（接口不分页，一次返回全部可见班级）；
-          学生数取列表回传的 studentCount，实际名单以「名单」里的 GET /api/class/students 为准；
-          班级名称过滤在前端完成，该接口不接受名称参数。
+          列表一次返回全部可见班级；学生数取自班级统计，实际名单以「名单」为准；
+          按名称过滤只作用于当前列表。
         </p>
         <table class="class-table">
           <thead>
@@ -331,19 +330,19 @@ onMounted(() => {
               <td class="muted">{{ row.teacherName || '—' }}</td>
               <td class="cell-num mono">{{ row.studentCount }}</td>
               <td style="text-align: right; white-space: nowrap;">
-                <button class="st-text-btn" title="PUT /api/class/{id}" @click="openEdit(row)">
+                <button class="st-text-btn" title="编辑班级信息" @click="openEdit(row)">
                   <Pencil :size="12" style="vertical-align: -2px;" /> 编辑
                 </button>
                 <button
                   class="st-text-btn"
-                  :title="`GET /api/class/students?classId=${row.classId}`"
+                  :title="`查看「${row.className}」的学生名单`"
                   @click="openRoster(row)"
                 >
                   <Users :size="12" style="vertical-align: -2px;" /> 名单
                 </button>
                 <button
                   class="st-text-btn st-text-btn--danger"
-                  :title="`DELETE /api/class/${row.classId}`"
+                  :title="`删除「${row.className}」`"
                   @click="handleDelete(row)"
                 >
                   <Trash2 :size="12" style="vertical-align: -2px;" /> 删除
@@ -356,7 +355,7 @@ onMounted(() => {
                   暂无班级数据：{{
                     courseMode === 'id' && courseIdFilter != null
                       ? `课程 ${courseIdFilter} 下没有班级`
-                      : '后端还没有创建班级'
+                      : '还没有创建任何班级'
                   }}
                 </template>
                 <template v-else>
@@ -381,10 +380,7 @@ onMounted(() => {
         <div class="st-card panel">
           <div class="st-card__header">
             <h2 class="st-card__title">{{ editingRow ? '编辑班级' : '新建班级' }}</h2>
-            <p class="st-card__hint">
-              {{ editingRow ? `PUT /api/class/${editingRow.classId}` : 'POST /api/class' }}
-              · 四项均为必填
-            </p>
+            <p class="st-card__hint">四项均为必填，保存后立即生效</p>
           </div>
           <div class="st-card__body">
             <div class="form-row">
@@ -398,7 +394,7 @@ onMounted(() => {
               </div>
             </div>
             <div class="form-item">
-              <label class="form-label">任课教师（提交 teacherId）</label>
+              <label class="form-label">任课教师</label>
               <el-select v-model="form.teacherId" placeholder="选择教师" filterable style="width: 100%;">
                 <el-option
                   v-for="t in teacherSelectOptions"
@@ -413,13 +409,13 @@ onMounted(() => {
                 <button class="st-text-btn" @click="loadTeachers">重试</button>
               </p>
               <p v-else-if="!teacherSelectOptions.length" class="field-hint">
-                GET /api/user/admin/list?roleId=2 未返回启用中的教师
+                还没有启用中的教师账号，请先在「用户管理」里添加教师
               </p>
             </div>
             <div class="form-item">
-              <label class="form-label">关联课程 ID（courseId）</label>
-              <el-input-number v-model="form.courseId" :min="1" :controls="false" placeholder="课程 ID" style="width: 200px;" />
-              <p class="field-hint">后端没有课程下拉接口，此处按课程 ID 数字填写（可从课程方或后端数据里取）。</p>
+              <label class="form-label">关联课程</label>
+              <el-input-number v-model="form.courseId" :min="1" :controls="false" placeholder="课程编号" style="width: 200px;" />
+              <p class="field-hint">填写课程编号，保存后会关联到对应课程。</p>
             </div>
             <div class="panel-actions">
               <button class="st-btn st-btn--ghost" @click="dialogVisible = false">取消</button>
@@ -441,9 +437,7 @@ onMounted(() => {
             <Users :size="16" class="card-icon" />
             <div>
               <h2 class="st-card__title">{{ rosterClass?.className ?? '班级学生名单' }}</h2>
-              <p class="st-card__hint">
-                GET /api/class/students?classId={{ rosterClass?.classId ?? '—' }} · 共 {{ students.length }} 人
-              </p>
+              <p class="st-card__hint">共 {{ students.length }} 名学生</p>
             </div>
           </div>
           <div class="st-card__body">
@@ -481,7 +475,7 @@ onMounted(() => {
                   </tr>
                   <tr v-if="!students.length">
                     <td colspan="4" class="muted cell-empty">
-                      该班级暂无学生（GET /api/class/students 返回空数组），可先在学生名册里把学生指派到该班级
+                      该班级暂无学生，可以先去「学生名册」把学生指派到本班
                     </td>
                   </tr>
                 </tbody>

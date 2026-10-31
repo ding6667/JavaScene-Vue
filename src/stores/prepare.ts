@@ -124,7 +124,7 @@ export const usePrepareStore = defineStore('prepare', () => {
       const raw = accepted?.recordId;
       const id = typeof raw === 'number' || typeof raw === 'string' ? String(raw).trim() : '';
       if (!id) {
-        fail('后端未返回备课记录编号');
+        fail('系统未返回备课记录编号，请稍后重试');
         return;
       }
       recordId.value = id;

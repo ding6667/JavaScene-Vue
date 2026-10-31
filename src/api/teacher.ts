@@ -158,11 +158,16 @@ export async function exportLessonPlan(recordId: number | string): Promise<Blob>
   })) as unknown as Blob;
 }
 
-/** GET /api/teach/ppt/download?recordId= —— 下载本人备课生成的 PPT（成功后后端自增下载计数） */
+/**
+ * GET /api/teach/ppt/download?recordId= —— 下载本人备课生成的 PPT（成功后后端自增下载计数）
+ * 记录只有 pptx_md、文件还没转出来时，后端会现场生成再回文件流，耗时可能超过默认 30s，
+ * 所以这里单独放宽超时。
+ */
 export async function downloadPpt(recordId: number | string): Promise<Blob> {
   return (await axiosInstance.get('/api/teach/ppt/download', {
     params: { recordId: normalizeId(recordId, '备课记录') },
     responseType: 'blob',
+    timeout: 120000,
   })) as unknown as Blob;
 }
 

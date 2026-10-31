@@ -151,7 +151,7 @@ const hardPoints = computed(() => knowledgePoints.value.filter((p) => p.difficul
 const keyPointSummary = computed(() => {
   if (!hardPoints.value.length) return null;
   return hardPoints.value
-    .map((p) => `${p.name}：${p.description || '（后端未填写描述）'}${p.pageRef ? `（${p.pageRef}）` : ''}`)
+    .map((p) => `${p.name}：${p.description || '（暂无描述）'}${p.pageRef ? `（${p.pageRef}）` : ''}`)
     .join('\n');
 });
 
@@ -229,7 +229,7 @@ async function loadProgress() {
     serverProgress.value = (list ?? []).find((p) => p.chapterId === chapterId.value) ?? null;
   } catch {
     serverProgress.value = null;
-    progressError.value = '接口待实现：fetchProgress（GET /api/study/progress/get?courseId=）';
+    progressError.value = '学习进度暂时读取不到，稍后再试';
   } finally {
     loadingProgress.value = false;
   }
@@ -340,7 +340,7 @@ watch(chapterId, reloadAll);
         <p class="st-page-subtitle">{{ chapter.description }}</p>
       </header>
 
-      <!-- 学习进度（已接桩：待实现 @/api/study.fetchProgress；上报走 POST /api/study/progress/save） -->
+      <!-- 学习进度 -->
       <div class="st-card mark-card">
         <div class="st-card__body">
           <div class="mark-row">
@@ -360,7 +360,7 @@ watch(chapterId, reloadAll);
             {{ serverProgress.chapterName || '本章' }}
           </p>
           <p v-else-if="loadingProgress" class="mark-hint">正在读取本章进度…</p>
-          <p v-else class="mark-hint">后端无该章进度记录，上报后此处会显示学习情况</p>
+          <p v-else class="mark-hint">还没有这一章的学习记录，标记已学后这里会显示进度</p>
 
           <div class="mark-row" style="margin-top: 12px;">
             <span class="mark-label">上报本章学习进度：</span>
@@ -396,12 +396,10 @@ watch(chapterId, reloadAll);
         </button>
       </div>
 
-      <!-- 知识点讲解（已对接 @/api/knowledge.fetchKnowledgePoints） -->
+      <!-- 知识点讲解 -->
       <template v-if="activeTab === 'content'">
         <div class="section-bar">
-          <span class="section-bar__hint">
-            已对接 @/api/knowledge.fetchKnowledgePoints · GET /api/knowledge/point/list?chapterId=
-          </span>
+          <span class="section-bar__hint">本章知识点讲解，标记已学可记录进度</span>
           <button class="st-text-btn" :disabled="loadingPoints" @click="loadKnowledgePoints">
             <RefreshCw :size="12" style="vertical-align: -2px;" /> 重新加载
           </button>
@@ -437,7 +435,7 @@ watch(chapterId, reloadAll);
             <span v-if="kp.pageRef" class="st-badge st-badge--neutral">{{ kp.pageRef }}</span>
           </div>
           <div class="st-card__body">
-            <p class="kp-content">{{ kp.description || '后端未填写该知识点描述' }}</p>
+            <p class="kp-content">{{ kp.description || '这个知识点还没有补充讲解' }}</p>
             <div v-if="kp.keyword" class="kp-pitfall">
               <CircleAlert :size="14" class="kp-pitfall__icon" />
               <div>
@@ -524,9 +522,9 @@ watch(chapterId, reloadAll);
               <div class="kp-actions">
                 <button
                   class="st-btn st-btn--primary"
-                  @click="router.push({ path: '/student/code', query: { chapterId: chapter.id, caseId: activeCase.id } })"
+                  @click="router.push(`/student/practice/${chapter.id}`)"
                 >
-                  <Play :size="14" /> 在代码实操中运行
+                  <Play :size="14" /> 去本章刷题
                 </button>
               </div>
             </div>
@@ -552,13 +550,13 @@ watch(chapterId, reloadAll);
         </div>
       </template>
 
-      <!-- 章节结构（已对接 @/api/knowledge.fetchChapterTree） -->
+      <!-- 章节结构 -->
       <template v-else-if="activeTab === 'tree'">
         <div class="st-card">
           <div class="st-card__header">
             <h2 class="st-card__title">本章小节</h2>
             <p class="st-card__hint">
-              已对接 @/api/knowledge.fetchChapterTree · GET /api/knowledge/chapter/tree?courseId=
+              按层级展示本章包含的节与小节
             </p>
             <button class="st-text-btn tree-reload" :disabled="loadingTree" @click="loadTree">
               <RefreshCw :size="12" style="vertical-align: -2px;" /> 重新加载
@@ -594,12 +592,12 @@ watch(chapterId, reloadAll);
         </div>
       </template>
 
-      <!-- 重难点总结（由 @/api/knowledge.fetchKnowledgePoints 的难度码值归纳） -->
+      <!-- 重难点总结 -->
       <template v-else>
         <div class="st-card">
           <div class="st-card__header">
             <h2 class="st-card__title">本章重难点总结</h2>
-            <p class="st-card__hint">取 difficulty ≥ 4 的知识点，数据源同知识点列表接口</p>
+            <p class="st-card__hint">按知识点难度归纳，难度越高越值得多花时间</p>
           </div>
           <div class="st-card__body">
             <p v-if="keyPointSummary" class="kp-content" style="white-space: pre-wrap;">{{ keyPointSummary }}</p>

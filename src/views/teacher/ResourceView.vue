@@ -7,9 +7,10 @@
  *
  * 后续接入方式：上传区改为调用 dataset/upload/file 并带 chapterId；
  * 资源表数据源换成 dataset/upload/list；删除按钮接 upload/delete/{id}；
- * 章节下拉可直接复用 @/api/student 的 fetchChapters()。
+ * 章节下拉已统一为 <ChapterSelect>（数据来自 useChapters 的共享缓存）。
  */
 import { computed, reactive, ref } from 'vue';
+import ChapterSelect from '@/components/ChapterSelect.vue';
 import type { Component } from 'vue';
 import {
   Code2,
@@ -32,7 +33,7 @@ const typeLabel = (value: string) => TYPE_OPTIONS.find((t) => t.value === value)
 const typeIcon = (value: string) => TYPE_OPTIONS.find((t) => t.value === value)?.icon ?? FileText;
 
 /** 筛选条件（仅本地 UI 状态） */
-const filters = reactive({ type: 'all', keyword: '', chapterId: '' });
+const filters = reactive({ type: 'all', keyword: '', chapterId: null as number | null });
 
 /** 骨架占位行：仅用于呈现资源表结构，接口就绪后由后端数据替换 */
 const SHELL_ROWS = [1, 2, 3].map((i) => ({
@@ -50,7 +51,7 @@ const displayRows = computed(() => (resources.value.length ? resources.value : S
 
 /** 上传弹窗（骨架，可填写但不提交） */
 const dialogVisible = ref(false);
-const form = reactive({ name: '', type: 'courseware', chapterId: '', description: '' });
+const form = reactive({ name: '', type: 'courseware', chapterId: null as number | null, description: '' });
 </script>
 
 <template>
@@ -89,9 +90,7 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
           :prefix-icon="Search"
           clearable
         />
-        <el-select v-model="filters.chapterId" placeholder="绑定章节" clearable style="width: 180px;">
-          <el-option label="暂未开放" value="_unavailable" disabled />
-        </el-select>
+        <ChapterSelect v-model="filters.chapterId" placeholder="绑定章节" clearable style="width: 180px;" />
         <span class="toolbar-count">资源清单暂未开放，下方只是占位示例</span>
         <button class="st-btn st-btn--primary" style="margin-left: auto;" @click="dialogVisible = true">
           <Plus :size="14" /> 上传资源
@@ -170,9 +169,7 @@ const form = reactive({ name: '', type: 'courseware', chapterId: '', description
               </div>
               <div class="form-item" style="flex: 1;">
                 <label class="form-label">绑定章节</label>
-                <el-select v-model="form.chapterId" clearable placeholder="请选择章节（可选）" style="width: 100%;">
-                  <el-option label="暂未开放" value="" disabled />
-                </el-select>
+                <ChapterSelect v-model="form.chapterId" clearable placeholder="请选择章节（可选）" style="width: 100%;" />
               </div>
             </div>
             <div class="form-item">

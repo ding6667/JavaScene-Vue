@@ -26,9 +26,9 @@ import {
   Square,
 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
-import { fetchChapters } from '@/api/knowledge';
 import { createQaSessionId, fetchQaHistory, streamQaAnswer } from '@/api/qa';
-import type { Chapter } from '@/types/knowledge';
+import ChapterSelect from '@/components/ChapterSelect.vue';
+import { useChapters } from '@/composables/useChapters';
 import type { QaHistoryItem, QaStreamMeta } from '@/types/qa';
 import { renderMarkdownStreaming } from '@/utils/markdown';
 
@@ -52,8 +52,9 @@ interface ChatMsg {
   error?: string;
 }
 
-const chapters = ref<Chapter[]>([]);
 const selectedChapter = ref<number | null>(null);
+/** 章节名回显与下拉共用 useChapters（不传 chapterId 时表示全书范围） */
+const { labelOf, load: loadChapters } = useChapters();
 const inputText = ref('');
 const sending = ref(false);
 const messages = ref<ChatMsg[]>([]);
@@ -78,8 +79,7 @@ const QUICK_QUESTIONS = [
 
 function chapterLabel(id: number | null | undefined): string {
   if (id == null) return '全书范围';
-  const c = chapters.value.find((x) => x.id === id);
-  return c ? `${c.chapterCode} ${c.title}` : `章节 ${id}`;
+  return labelOf(id);
 }
 
 function fmtTime(iso: string): string {
@@ -327,13 +327,7 @@ function replay(item: QaHistoryItem) {
 }
 
 onMounted(() => {
-  fetchChapters()
-    .then((list) => {
-      chapters.value = list;
-    })
-    .catch(() => {
-      // 错误已由响应拦截器统一提示
-    });
+  void loadChapters();
   void loadHistory(1);
 });
 
@@ -362,14 +356,12 @@ onBeforeUnmount(() => {
           <div>
             <h2 class="st-card__title">提问</h2>
             <p class="st-card__hint">
-              GET /api/qa/answer/stream · 会话 {{ qaSessionId }}
-              <span v-if="roundNo"> · 第 {{ roundNo }} 轮</span>
+              有不懂的随时问，我会结合教材一步步讲给你听
+              <span v-if="roundNo"> · 第 {{ roundNo }} 轮对话</span>
             </p>
           </div>
           <div class="head-ops">
-            <el-select v-model="selectedChapter" placeholder="全书范围" clearable filterable style="width: 190px;">
-              <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode} ${c.title}`" :value="c.id" />
-            </el-select>
+            <ChapterSelect v-model="selectedChapter" placeholder="全书范围" clearable style="width: 190px;" />
             <button class="st-btn st-btn--ghost" :disabled="!messages.length" @click="clearConversation">
               <Eraser :size="13" /> 清空
             </button>
@@ -379,7 +371,7 @@ onBeforeUnmount(() => {
         <div ref="messagesEl" class="qa-stream">
           <div v-if="!messages.length" class="st-empty qa-empty">
             <Sparkles :size="26" :stroke-width="1.2" class="st-empty__icon" />
-            <div class="st-empty__text">提出一个问题，答案会逐字流式返回并实时渲染</div>
+            <div class="st-empty__text">开始提问吧！点下面的例子，或直接输入你的问题。</div>
             <div class="quick-row">
               <button
                 v-for="qq in QUICK_QUESTIONS"
@@ -440,7 +432,7 @@ onBeforeUnmount(() => {
             @keydown.ctrl.enter.prevent="ask(inputText)"
           ></textarea>
           <div class="qa-input__foot">
-            <span class="qa-input__hint">接口：GET /api/qa/answer/stream?question&chapterId&sessionId</span>
+            <span class="qa-input__hint">AI 回答仅供学习参考，重要结论请对照教材核对</span>
             <button class="st-btn st-btn--primary" :disabled="!inputText.trim() || sending" @click="ask(inputText)">
               <Loader2 v-if="sending" :size="14" class="spin" />
               <Send v-else :size="14" />
@@ -457,7 +449,7 @@ onBeforeUnmount(() => {
           <div>
             <h2 class="st-card__title">答疑记录</h2>
             <p class="st-card__hint">
-              GET /api/qa/history · 共 {{ historyTotal }} 条
+              你问过的问题都会留在这里，共 {{ historyTotal }} 条
               <span v-if="historyError"> · {{ historyError }}</span>
             </p>
           </div>
@@ -465,10 +457,10 @@ onBeforeUnmount(() => {
             class="st-text-btn"
             :class="{ 'hist-scope--on': onlyCurrentSession }"
             :disabled="loadingHistory"
-            title="只看本次会话（按轮次顺序）/ 看全部历史"
+            title="只看这次对话 / 看全部历史"
             @click="toggleSessionScope"
           >
-            {{ onlyCurrentSession ? '本会话' : '全部' }}
+            {{ onlyCurrentSession ? '本次' : '全部' }}
           </button>
           <button class="st-text-btn" :disabled="loadingHistory" title="重新加载历史" @click="loadHistory(1)">
             <RefreshCw :size="13" :class="{ spin: loadingHistory }" />
@@ -822,7 +814,7 @@ onBeforeUnmount(() => {
   color: var(--text-tertiary);
 }
 
-/* Markdown 渲染（后端推送的就是 md 源文本） */
+/* Markdown 渲染（后端推送的就是 md 源文本，且经常不写规范空格，见 @/utils/markdown） */
 .md {
   font-size: 13.5px;
   line-height: 1.8;
@@ -830,24 +822,63 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
+/* 标题：按层级给字号。答疑正文的 markdown 从 h1 起步（headingOffset 0），
+   所以 h1/h2/h3 都要有明确字号，否则会和正文一样大、看起来像没渲染。 */
 .md :deep(.md-h) {
-  margin: 14px 0 6px;
-  font-size: 14.5px;
-  font-weight: 600;
+  margin: 16px 0 8px;
+  font-weight: 650;
+  line-height: 1.5;
   letter-spacing: -0.2px;
 }
 
+.md :deep(.md-h:first-child) {
+  margin-top: 0;
+}
+
+.md :deep(.md-h1) {
+  font-size: 17px;
+}
+
+.md :deep(.md-h2) {
+  font-size: 16px;
+}
+
+.md :deep(.md-h3) {
+  font-size: 14.5px;
+}
+
+.md :deep(.md-h4) {
+  font-size: 14px;
+}
+
+.md :deep(.md-h5),
+.md :deep(.md-h6) {
+  font-size: 13.5px;
+}
+
 .md :deep(.md-p) {
-  margin: 5px 0;
+  margin: 6px 0;
 }
 
 .md :deep(.md-list) {
-  margin: 5px 0 9px 20px;
-  padding: 0;
+  margin: 6px 0 10px;
+  padding-left: 20px;
 }
 
 .md :deep(.md-list li) {
-  margin: 2px 0;
+  margin: 3px 0;
+}
+
+/* 任务列表前面的复选框符号 */
+.md :deep(.md-task) {
+  display: inline-block;
+  min-width: 14px;
+  margin-right: 4px;
+  color: var(--text-tertiary);
+}
+
+.md :deep(.md-task--done) {
+  color: var(--status-success, #3f7f4c);
 }
 
 .md :deep(.md-quote) {
@@ -888,6 +919,47 @@ onBeforeUnmount(() => {
 .md :deep(.md-link) {
   color: var(--text-primary);
   text-decoration: underline;
+}
+
+/* 表格：外层负责横向滚动，表格本身铺满；单元格线用极淡的分隔色 */
+.md :deep(.md-table-wrap) {
+  margin: 10px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.md :deep(.md-table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.md :deep(.md-table th),
+.md :deep(.md-table td) {
+  padding: 7px 10px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.md :deep(.md-table th) {
+  background: var(--bg-subtle);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.md :deep(.md-table tr:last-child td) {
+  border-bottom: none;
+}
+
+.md :deep(.md-table th:last-child),
+.md :deep(.md-table td:last-child) {
+  border-right: none;
 }
 
 .md :deep(strong) {

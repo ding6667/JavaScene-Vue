@@ -178,12 +178,12 @@
                         v-else
                         class="apikey-masked"
                       >
-                        已设置 apikey
+                        已设置密钥
                       </div>
                       <button
                         v-if="item.configValue"
                         class="apikey-reset-btn"
-                        title="重置 apikey"
+                        title="重置密钥"
                         @click="resetApiKey(item)"
                       >
                         <RotateCcw :size="14" />
@@ -437,10 +437,10 @@ import { useSettingsStore } from '@/stores/settings';
 import type { SettingsTab, RubricItem } from '@/types/standard';
 import type { CommonSetting } from '@/types/settings';
 
-/** 统一错误文案：后端函数仍是桩（抛「未实现：…」）时转为「接口待实现：@/api/settings.<fn>」 */
-function apiHint(e: unknown, fn: string): string {
+/** 统一错误文案：功能未开放时给用户一句人话，其余原样透出后端提示 */
+function apiHint(e: unknown, what: string): string {
   const message = e instanceof Error ? e.message : String(e ?? '');
-  return message.includes('未实现') ? `接口待实现：@/api/settings.${fn}` : message || `${fn} 调用失败`;
+  return message.includes('未实现') ? `${what}暂未开放` : message || `${what}失败`;
 }
 
 // ==================== 控件识别 & 值转换 ====================
@@ -601,7 +601,7 @@ async function loadGeneralSettings() {
   try {
     await settingsStore.fetch();
   } catch (e: unknown) {
-    generalError.value = apiHint(e, 'getCommonSettings');
+    generalError.value = apiHint(e, '常规设置加载');
     return;
   }
   // 仅在成功后建立快照（避免把失败时的脏值当基线）
@@ -745,7 +745,7 @@ async function handleBatchSave(silent = false): Promise<boolean> {
         success++;
       } catch (e: unknown) {
         failed++;
-        if (!firstError) firstError = apiHint(e, 'updateCommonSettings');
+        if (!firstError) firstError = apiHint(e, '设置保存');
         // 其余项继续尝试，最后统一提示
       }
     }
@@ -782,7 +782,7 @@ async function handleResetDefault() {
     takeOriginalSnapshot();
     ElMessage.success('已恢复默认设置');
   } catch (e: unknown) {
-    ElMessage.error(apiHint(e, 'defaultSettings'));
+    ElMessage.error(apiHint(e, '恢复默认设置'));
   } finally {
     resetting.value = false;
   }

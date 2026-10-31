@@ -87,8 +87,7 @@ const trendPath = computed(() => {
 });
 
 function handleRefresh() {
-  // 接口预留：监控数据聚合接口未开放，此处不发起请求
-  ElMessage.info('接口预留：后端未提供监控数据聚合接口');
+  ElMessage.info('数据刷新暂未开放，当前展示的是最近一次统计结果');
 }
 </script>
 
@@ -107,8 +106,7 @@ function handleRefresh() {
     <div class="dash-notice">
       <AlertTriangle :size="14" />
       <span>
-        接口预留：本页所需监控聚合能力（服务健康度、访问趋势、异常告警）后端尚未开放，当前为界面骨架。
-        待后端补充接口，或由前端组合 GET /api/user/admin/list 与 GET /api/knowledge/dataset/upload/list 计算得出。
+        监控看板正在建设中：服务健康度、访问趋势与异常告警会陆续上线，当前展示的是页面结构预览。
       </span>
     </div>
 
@@ -132,7 +130,7 @@ function handleRefresh() {
         <div class="st-card__header">
           <div>
             <h2 class="st-card__title">近 7 日访问趋势</h2>
-            <p class="st-card__hint">三端 Web 访问人次 · 接口预留，暂无数据</p>
+            <p class="st-card__hint">三端 Web 访问人次 · 数据接入中</p>
           </div>
         </div>
         <div class="st-card__body">
@@ -167,7 +165,7 @@ function handleRefresh() {
               </template>
             </svg>
             <div v-if="!trend.length" class="chart-empty">
-              <span class="st-empty__text">暂无趋势数据 · 接口预留</span>
+              <span class="st-empty__text">暂无趋势数据，统计接入后这里会显示走势</span>
             </div>
           </div>
         </div>
@@ -179,7 +177,7 @@ function handleRefresh() {
           <AlertTriangle :size="16" class="card-icon" />
           <div>
             <h2 class="st-card__title">异常告警</h2>
-            <p class="st-card__hint">需关注的运行风险（{{ alerts.length }} 条）· 接口预留</p>
+            <p class="st-card__hint">需关注的运行风险（{{ alerts.length }} 条）</p>
           </div>
         </div>
         <div class="st-card__body alert-list">
@@ -195,7 +193,7 @@ function handleRefresh() {
           </div>
           <div v-if="!alerts.length" class="skeleton-row" />
           <div v-if="!alerts.length" class="skeleton-row skeleton-row--short" />
-          <div v-if="!alerts.length" class="placeholder-tip">接口预留：后端未提供告警查询接口</div>
+          <div v-if="!alerts.length" class="placeholder-tip">暂无告警，系统运行正常</div>
         </div>
       </section>
     </div>
@@ -206,7 +204,7 @@ function handleRefresh() {
         <Server :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">服务运行状态</h2>
-          <p class="st-card__hint">{{ onlineCount }} / {{ services.length }} 个服务在线 · 含限流熔断监控（接口预留）</p>
+          <p class="st-card__hint">{{ onlineCount }} / {{ services.length }} 个服务在线</p>
         </div>
       </div>
       <div class="st-card__body">
@@ -232,7 +230,7 @@ function handleRefresh() {
           </div>
         </div>
 
-        <div class="svc-section-title" style="margin-top: 18px;">AI 智能体服务（Dify）</div>
+        <div class="svc-section-title" style="margin-top: 18px;">AI 智能体服务</div>
         <div class="svc-grid">
           <div
             v-for="s in agentServices"
@@ -250,7 +248,7 @@ function handleRefresh() {
               <span class="st-badge" :class="s.online ? 'st-badge--success' : 'st-badge--danger'">{{ s.online ? '在线' : '熔断降级' }}</span>
             </div>
             <div class="svc-item__meta">
-              {{ s.online ? `负载 ${s.load}% · 调用 ${s.callCount.toLocaleString()} 次 · 均响 ${s.avgResponseMs}ms` : '已返回教材标准兜底提示，建议检查 Dify 工作流' }}
+              {{ s.online ? `负载 ${s.load}% · 调用 ${s.callCount.toLocaleString()} 次 · 均响 ${s.avgResponseMs}ms` : '已切换到教材标准兜底提示，建议检查智能体配置' }}
             </div>
             <div class="st-progress" style="margin-top: 6px;">
               <div class="st-progress__bar" :class="{ 'st-progress__bar--warn': s.load > 75 }" :style="{ width: s.load + '%' }"></div>

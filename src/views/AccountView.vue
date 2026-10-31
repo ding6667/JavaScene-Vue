@@ -339,7 +339,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">基础资料</h2>
           <p class="st-card__hint">
-            PUT /api/user/info/update · 只有姓名 / 邮箱 / 电话 / 头像可改，用户名与角色由管理端维护
+            姓名、邮箱、电话和头像可以自己修改，用户名与角色由管理员统一维护
           </p>
         </div>
         <div class="card-actions">
@@ -406,7 +406,7 @@ onMounted(() => {
               <p v-if="baseForm.avatar.trim() && avatarFailed" class="form-hint form-hint--bad">
                 该链接没能加载出图片，确认地址可直接访问
               </p>
-              <p v-else class="form-hint">后端只提供头像直链字段，没有上传接口</p>
+              <p v-else class="form-hint">填写一个可公开访问的图片链接即可，建议使用正方形图片</p>
             </div>
           </div>
 
@@ -450,8 +450,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">角色档案 · 学生</h2>
           <p class="st-card__hint">
-            GET /api/user/student/info · PUT /api/user/student/info/update
-            （学号 / 专业 / 学院 / 入学年份可改，班级与年级由管理端排定）
+            学号、专业、学院、入学年份可以自己修改，班级与年级由教务统一安排
           </p>
         </div>
         <div class="card-actions">
@@ -526,10 +525,6 @@ onMounted(() => {
               <span class="ro-label">预计毕业</span>
               <span class="ro-value">{{ studentInfo.graduationYear || '—' }}</span>
             </div>
-            <div class="ro-item">
-              <span class="ro-label">班级 ID</span>
-              <span class="ro-value mono">{{ studentInfo.classId || '—' }}</span>
-            </div>
           </div>
         </template>
       </div>
@@ -542,8 +537,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">角色档案 · 教师</h2>
           <p class="st-card__hint">
-            GET /api/user/teacher/info · PUT /api/user/teacher/info/update
-            （工号 / 职称 / 学院 / 院系 / 办公室 / 研究方向）
+            工号、职称、学院、院系、办公室与研究方向，方便学生找到你
           </p>
         </div>
         <div class="card-actions">
@@ -615,7 +609,7 @@ onMounted(() => {
         <UserRound :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">角色档案</h2>
-          <p class="st-card__hint">/api/user/student/info 与 /api/user/teacher/info 只面向学生、教师角色</p>
+          <p class="st-card__hint">只有学生和教师账号才有这份档案</p>
         </div>
       </div>
       <div class="st-card__body st-empty">
@@ -631,8 +625,7 @@ onMounted(() => {
         <div>
           <h2 class="st-card__title">修改密码</h2>
           <p class="st-card__hint">
-            PUT /api/user/password/change {oldPassword, newPassword} ·
-            成功后当前会话立即失效，需要重新登录
+            为了账号安全，建议定期更换密码；修改成功后需要重新登录
           </p>
         </div>
         <div class="card-actions">
@@ -684,7 +677,7 @@ onMounted(() => {
             </div>
             <p v-if="pwdTooShort" class="form-hint form-hint--bad">新密码至少 6 位</p>
             <p v-else-if="pwdSameAsOld" class="form-hint form-hint--bad">新密码不能与原密码相同</p>
-            <p v-else class="form-hint">6-32 位，后端 BCrypt 加密存储</p>
+            <p v-else class="form-hint">6-32 位，密码会加密保存</p>
           </div>
           <div class="form-item">
             <label class="form-label" for="pwd-confirm">确认新密码</label>
@@ -702,7 +695,7 @@ onMounted(() => {
 
         <p v-if="pwdError" class="form-hint form-hint--bad">{{ pwdError }}</p>
         <div v-if="pwdForm.oldPassword && pwdForm.newPassword.length >= 6 && !pwdSameAsOld && !pwdMismatch" class="table-note">
-          提交后旧 token 立即失效：保存成功会清空本地会话并跳转到登录页。
+          保存成功后当前登录会自动退出，请用新密码重新登录。
         </div>
       </div>
     </section>

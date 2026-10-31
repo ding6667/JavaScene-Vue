@@ -28,9 +28,9 @@ import {
   X,
 } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
-import { fetchChapters } from '@/api/knowledge';
 import { fetchCodeRecordDetail, fetchCodeRecords } from '@/api/study';
-import type { Chapter } from '@/types/knowledge';
+import ChapterSelect from '@/components/ChapterSelect.vue';
+import { useChapters } from '@/composables/useChapters';
 import type { CodeRecordItem } from '@/types/study';
 
 /** 判题状态中文口径（与代码实操页一致），后端为力扣式字符串 */
@@ -50,7 +50,8 @@ const PAGE_SIZES = [10, 20, 50];
 
 const router = useRouter();
 
-const chapters = ref<Chapter[]>([]);
+/** 章节数据（回显章节名 + 下拉共用一份） */
+const { findById: findChapter, load: loadChapters } = useChapters();
 
 /** 筛选：章节 / 题目 ID（CodeRecordQuery 只支持这两个维度） */
 const filters = ref({ chapterId: 0 as number, questionId: undefined as number | undefined, pageNum: 1, pageSize: 10 });
@@ -76,9 +77,9 @@ const pageCount = computed(() => {
 
 type Loose = Record<string, unknown>;
 
-function describeError(apiPath: string, e: unknown): string {
+function describeError(what: string, e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  return `接口调用失败：${apiPath}（${msg}）`;
+  return `${what}失败：${msg}`;
 }
 
 function asLoose(v: unknown): Loose | null {
@@ -132,7 +133,7 @@ function chapterNameOf(rec: unknown): string {
   if (name) return name;
   const cid = fieldNum(rec, ['chapterId']);
   if (cid === null) return '未关联章节';
-  return chapters.value.find((c) => c.id === cid)?.title ?? `章节 ${cid}`;
+  return findChapter(cid)?.title ?? `章节 ${cid}`;
 }
 
 function statusOf(rec: unknown): string {
@@ -160,14 +161,6 @@ function fmt(iso: unknown): string {
 
 // ==================== 取数 ====================
 
-async function loadChapters() {
-  try {
-    chapters.value = await fetchChapters();
-  } catch {
-    chapters.value = [];
-  }
-}
-
 async function loadList() {
   loading.value = true;
   listError.value = null;
@@ -183,7 +176,7 @@ async function loadList() {
   } catch (e) {
     records.value = [];
     total.value = null;
-    listError.value = describeError('@/api/study.fetchCodeRecords', e);
+    listError.value = describeError('提交记录加载', e);
   } finally {
     loading.value = false;
   }
@@ -205,7 +198,7 @@ function goPage(next: number) {
 async function openDetail(rec: unknown) {
   const id = recordIdOf(rec);
   if (id === null) {
-    ElMessage.warning('该记录缺少主键（后端列表 schema 为空对象），无法查详情');
+    ElMessage.warning('这条记录缺少编号，无法查看详情');
     return;
   }
   activeRecordId.value = id;
@@ -218,10 +211,10 @@ async function openDetail(rec: unknown) {
     const parsed = typeof data === 'string' ? parseMaybeJson(data) : data;
     detail.value = parsed ?? data;
     if (parsed === null && typeof data === 'string') {
-      detailError.value = '详情返回的是纯文本（openapi 把 data 声明成 string），已按原文展示';
+      detailError.value = '这条记录只保存了文本内容，已按原文展示';
     }
   } catch (e) {
-    detailError.value = describeError('@/api/study.fetchCodeRecordDetail', e);
+    detailError.value = describeError('记录详情加载', e);
   } finally {
     detailLoading.value = false;
   }
@@ -277,40 +270,25 @@ onMounted(async () => {
 <template>
   <div class="st-view">
     <div class="detail-topbar">
-      <button class="st-text-btn" @click="router.push('/student/code')">
-        <ArrowLeft :size="14" style="margin-right: 4px;" /> 返回代码实操
+      <button class="st-text-btn" @click="router.push('/student/practice')">
+        <ArrowLeft :size="14" style="margin-right: 4px;" /> 返回刷题练习
       </button>
     </div>
 
     <header class="st-page-header">
       <h1 class="st-page-title">代码运行记录</h1>
-      <p class="st-page-subtitle">每次提交后端编译运行的判题留痕 · 可查看历史代码、用例明细与 AI 调试字段</p>
+      <p class="st-page-subtitle">每次提交的判题留痕 · 可查看历史代码、用例明细与调试建议</p>
     </header>
-
-    <!-- 文档缺口提示 -->
-    <div class="st-card notice-card">
-      <div class="st-card__body notice-row">
-        <CircleAlert :size="15" class="notice-icon" />
-        <p class="notice-text">
-          后端 openapi 对 code/record/list 的列表项 schema 是空对象、code/record/detail 的 data 声明成 string，
-          属文档缺口。本页字段全部按候选键名容错取值，取不到即显示「—」，
-          <strong>具体字段以联调结果为准</strong>；列表接口也不返回代码大字段，代码只在详情里给出。
-        </p>
-      </div>
-    </div>
 
     <!-- 筛选 -->
     <div class="st-card filter-card">
       <div class="st-card__body filter-row">
-        <el-select v-model="filters.chapterId" style="width: 220px;" size="default" @change="applyFilters">
-          <el-option label="全部章节" :value="0" />
-          <el-option v-for="c in chapters" :key="c.id" :label="`${c.chapterCode} ${c.title}`" :value="c.id" />
-        </el-select>
+        <ChapterSelect v-model="filters.chapterId" allow-all style="width: 220px;" @change="applyFilters" />
         <el-input-number
           v-model="filters.questionId"
           :min="1"
           :controls="false"
-          placeholder="questionId"
+          placeholder="题目编号"
           style="width: 140px;"
         />
         <el-select v-model="filters.pageSize" style="width: 120px;" size="default" @change="applyFilters">
@@ -334,7 +312,7 @@ onMounted(async () => {
         <Code2 :size="15" class="card-icon" />
         <div>
           <h2 class="st-card__title">运行记录列表</h2>
-          <p class="st-card__hint">GET /api/study/code/record/list · PageResponse&lt;CodeRecordItem&gt;</p>
+          <p class="st-card__hint">按提交时间倒序排列</p>
         </div>
       </div>
       <div class="st-card__body" style="padding-top: 12px;">
@@ -356,7 +334,7 @@ onMounted(async () => {
         <table v-else class="record-table">
           <thead>
             <tr>
-              <th class="col-id">记录 ID</th>
+              <th class="col-id">记录编号</th>
               <th>章节</th>
               <th class="col-status">状态</th>
               <th class="col-case">用例</th>
@@ -404,7 +382,7 @@ onMounted(async () => {
           <div>
             <h3 class="dialog__title">运行详情 #{{ activeRecordId ?? '—' }}</h3>
             <p class="dialog__sub">
-              GET /api/study/code/record/detail?recordId= · 字段以联调结果为准
+              这次运行提交的代码与判题明细
             </p>
           </div>
           <button class="st-btn st-btn--ghost" @click="detailVisible = false">
@@ -442,7 +420,7 @@ onMounted(async () => {
             <div class="detail-block">
               <div class="detail-block__head">提交的代码</div>
               <div class="code-box st-code">
-                <pre>{{ fieldText(detail, ['codeContent', 'code', 'sourceCode'], '— 后端未返回代码内容 —') }}</pre>
+                <pre>{{ fieldText(detail, ['codeContent', 'code', 'sourceCode'], '— 这条记录没有保存代码内容 —') }}</pre>
               </div>
             </div>
 
@@ -468,7 +446,7 @@ onMounted(async () => {
             <div class="detail-block">
               <div class="detail-block__head">
                 用例明细
-                <span v-if="detailCases.length === 0" class="head-tip">后端未返回用例数组</span>
+                <span v-if="detailCases.length === 0" class="head-tip">这次运行没有用例明细</span>
               </div>
               <div v-if="detailCases.length === 0" class="st-empty" style="padding: 16px;">
                 <div class="st-empty__text">—</div>
@@ -517,7 +495,7 @@ onMounted(async () => {
                   <div class="ai-item__value">{{ fieldText(detail, ['optimizeSuggest']) }}</div>
                 </div>
                 <div class="ai-item">
-                  <div class="ai-item__label">参考思路 standardIdea</div>
+                  <div class="ai-item__label">参考思路</div>
                   <div class="ai-item__value">{{ fieldText(detail, ['standardIdea']) }}</div>
                 </div>
                 <div class="ai-item">
@@ -536,7 +514,7 @@ onMounted(async () => {
 
             <!-- 原文兜底：data 是字符串时给出裸文本 -->
             <div v-if="detailAsText" class="detail-block">
-              <div class="detail-block__head">后端原始返回（data 为 string）</div>
+              <div class="detail-block__head">原始返回内容</div>
               <div class="code-box st-code"><pre>{{ detailAsText }}</pre></div>
             </div>
           </template>
