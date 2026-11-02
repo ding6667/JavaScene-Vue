@@ -6,6 +6,9 @@ import axiosInstance from '@/api';
 import { typeCodeOf } from '@/utils/questionCode';
 import type {
   DifficultyConfig,
+  HomeworkAnswers,
+  HomeworkDraftRequest,
+  HomeworkDraftResult,
   HomeworkGradingResult,
   HomeworkSubmitRequest,
   JudgeTestCase,
@@ -256,12 +259,75 @@ export async function generateQuestions(data: QuestionGenerateRequest): Promise<
 }
 
 /**
- * POST /api/exam/homework/submit —— 学生提交作业答案（整份 answers[] 一次提交）
+ * POST /api/exam/homework/submit —— 学生提交作业答案（交卷）
+ *
+ * 交卷语义（后端）：
+ *   - 本次 answers 写入并置为已提交；
+ *   - 该作业下本人其余草稿一并转正，并按全卷已提交题目重算总分、全量重批。
+ * 所以这里只传「本次有作答的题」即可，不需要把全部题都带上。
  * 成功响应 data 为 null，没有可展示文本；提示语由页面用固定文案。
  */
 export async function submitHomework(data: HomeworkSubmitRequest): Promise<void> {
   const res = await axiosInstance.post('/api/exam/homework/submit', data);
   traceSuccess('exam/homework/submit', res);
+}
+
+/**
+ * POST /api/exam/homework/draft —— 保存作业草稿（不判卷、不创建批改任务）
+ *
+ * 只传本次变化的题（页面做 3s 节流）；接口幂等，重复保存同一题只覆盖 answerContent。
+ * 截止时间不约束草稿：作业过期也能存，避免学生写了一半的内容丢失。
+ * 已经是已提交状态的题会被后端忽略，题号在 ignoredQuestionIds 里返回。
+ */
+export async function saveHomeworkDraft(
+  data: HomeworkDraftRequest,
+): Promise<HomeworkDraftResult> {
+  const res = await axiosInstance.post('/api/exam/homework/draft', data);
+  const src = (unwrap<Record<string, unknown>>(res) ?? {}) as Record<string, unknown>;
+  return {
+    homeworkId: toNumber(src.homeworkId) ?? data.homeworkId,
+    draftQuestionCount: toNumber(src.draftQuestionCount) ?? 0,
+    lastDraftTime: toStringValue(src.lastDraftTime) ?? null,
+    ignoredQuestionIds: toNumberList(src.ignoredQuestionIds),
+  };
+}
+
+/**
+ * GET /api/exam/homework/my-answers —— 本人该作业下的全部作答（草稿 + 已提交）
+ * 用于「退出重进继续答」；没出现在 answers 里的题，调用方用 brief.questionIds 做差集。
+ */
+export async function fetchMyHomeworkAnswers(homeworkId: number): Promise<HomeworkAnswers> {
+  const res = await axiosInstance.get('/api/exam/homework/my-answers', {
+    params: { homeworkId },
+  });
+  const src = (unwrap<Record<string, unknown>>(res) ?? {}) as Record<string, unknown>;
+  const rawList = Array.isArray(src.answers) ? src.answers : [];
+  return {
+    homeworkId: toNumber(src.homeworkId) ?? homeworkId,
+    totalQuestionCount: toNumber(src.totalQuestionCount) ?? null,
+    submittedQuestionCount: toNumber(src.submittedQuestionCount) ?? 0,
+    draftQuestionCount: toNumber(src.draftQuestionCount) ?? 0,
+    answeredQuestionCount: toNumber(src.answeredQuestionCount) ?? 0,
+    lastSubmitTime: toStringValue(src.lastSubmitTime) ?? null,
+    lastDraftTime: toStringValue(src.lastDraftTime) ?? null,
+    // teach 不可用时后端给 null，前端别当成「不可提交」
+    expired: typeof src.expired === 'boolean' ? src.expired : null,
+    canSubmit: typeof src.canSubmit === 'boolean' ? src.canSubmit : null,
+    answers: rawList
+      .map((item) => {
+        const row = (item ?? {}) as Record<string, unknown>;
+        return {
+          questionId: toNumber(row.questionId) ?? 0,
+          snapshotId: toNumber(row.snapshotId) ?? 0,
+          answerContent: String(row.answerContent ?? ''),
+          status: toNumber(row.status) ?? 0,
+          statusName: String(row.statusName ?? ''),
+          submitTime: toStringValue(row.submitTime) ?? null,
+          updateTime: toStringValue(row.updateTime) ?? null,
+        };
+      })
+      .filter((row) => row.questionId > 0),
+  };
 }
 
 // ==================== 我的作业（学生本人） ====================

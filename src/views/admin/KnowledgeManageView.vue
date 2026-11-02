@@ -17,6 +17,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import {
   BookOpen,
+  ChevronRight,
   FileText,
   Info,
   Layers,
@@ -71,18 +72,133 @@ const treeError = ref('');
 
 interface TreeRow {
   node: ChapterTreeNode;
+  /** 缩进层级，0=章 */
   depth: number;
+  hasChildren: boolean;
+  collapsed: boolean;
 }
 
-const treeRows = computed<TreeRow[]>(() => {
+/**
+ * 折叠状态用反口径记录：只存「被手动展开的节点」，没记录过的一律收起。
+ * 这样章节树接口和章节列表两条异步数据谁先到都不影响默认全折叠。
+ */
+const expandedIds = ref(new Set<string>());
+
+/**
+ * 整树展开/收起时换掉 tbody 的 key：TransitionGroup 被重建，行直接增删。
+ * 逐行淡出要等 transition 收尾才摘节点，204 章里有上百行同时离场，
+ * 慢机器或标签页在后台时会看着像按钮按不动，所以批量操作不走逐行过渡。
+ */
+const treeBatchKey = ref(0);
+
+function toggleFold(id: number | string) {
+  const key = String(id);
+  const next = new Set(expandedIds.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedIds.value = next;
+}
+
+const sortNodes = (nodes: ChapterTreeNode[]) =>
+  [...nodes].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+
+/** 根桶的 key，避开真实主键，防止 parentId=0 与 id=0 撞车 */
+const ROOT_KEY = '__root__';
+
+/** 已嵌套的树摊平成一份节点集合，children 清空、parentId 留着，交给 nestByParent 重组 */
+function flattenNodes(nodes: ChapterTreeNode[], acc: ChapterTreeNode[] = []): ChapterTreeNode[] {
+  for (const n of nodes ?? []) {
+    acc.push({ ...n, children: [] });
+    flattenNodes(n.children ?? [], acc);
+  }
+  return acc;
+}
+
+/**
+ * 按 parentId 重组层级。章节树接口若只给平铺列表（children 恒空）或整段没返回，
+ * 没有层级就没有可折叠的父节点，折叠按钮会变摆设，所以前端自己把树搭起来。
+ * 父级缺失或自引用的节点挂到根上，不让整棵子树凭空消失。
+ */
+function nestByParent(flat: ChapterTreeNode[]): ChapterTreeNode[] {
+  const keys = new Set(flat.map((n) => String(n.id)));
+  const byParent = new Map<string, ChapterTreeNode[]>();
+  for (const n of flat) {
+    const pid = n.parentId == null ? '' : String(n.parentId);
+    const bucketKey = pid && pid !== String(n.id) && keys.has(pid) ? pid : ROOT_KEY;
+    const bucket = byParent.get(bucketKey);
+    if (bucket) bucket.push(n);
+    else byParent.set(bucketKey, [n]);
+  }
+  for (const n of flat) n.children = sortNodes(byParent.get(String(n.id)) ?? []);
+  return sortNodes(byParent.get(ROOT_KEY) ?? []);
+}
+
+/** 章节列表（本页下拉共用，正常都有数据）→ 树，作为章节树接口的兜底数据源 */
+function treeFromChapters(list: Chapter[]): ChapterTreeNode[] {
+  return nestByParent(
+    list.map((c) => ({
+      id: c.id,
+      courseId: c.courseId,
+      parentId: c.parentId,
+      chapterCode: c.chapterCode,
+      title: c.title,
+      level: c.level,
+      sortOrder: c.sortOrder,
+      children: [],
+    })),
+  );
+}
+
+/** 真正用来渲染的章节树：优先章节树接口，接口没给出层级时用章节列表现场组装 */
+const foldSource = computed<ChapterTreeNode[]>(() => {
+  const fromApi = nestByParent(flattenNodes(treeNodes.value));
+  return fromApi.length > 0 ? fromApi : treeFromChapters(chapters.value);
+});
+
+/** 所有带子级的节点 ID */
+function collectParentIds(nodes: ChapterTreeNode[], acc: string[] = []): string[] {
+  for (const n of sortNodes(nodes)) {
+    const kids = n.children ?? [];
+    if (kids.length) {
+      acc.push(String(n.id));
+      collectParentIds(kids, acc);
+    }
+  }
+  return acc;
+}
+
+const parentIds = computed(() => collectParentIds(foldSource.value));
+
+function collapseAll() {
+  treeBatchKey.value += 1;
+  expandedIds.value = new Set();
+}
+
+function expandAll() {
+  treeBatchKey.value += 1;
+  expandedIds.value = new Set(parentIds.value);
+}
+
+const allCollapsed = computed(
+  () => parentIds.value.length > 0 && parentIds.value.every((id) => !expandedIds.value.has(id)),
+);
+
+function toggleAll() {
+  if (allCollapsed.value) expandAll();
+  else collapseAll();
+}
+
+const chapterRows = computed<TreeRow[]>(() => {
   const out: TreeRow[] = [];
   const walk = (nodes: ChapterTreeNode[], depth: number) => {
-    for (const n of [...nodes].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)) {
-      out.push({ node: n, depth });
-      walk(n.children ?? [], depth + 1);
+    for (const n of sortNodes(nodes)) {
+      const kids = n.children ?? [];
+      const collapsed = kids.length > 0 && !expandedIds.value.has(String(n.id));
+      out.push({ node: n, depth, hasChildren: kids.length > 0, collapsed });
+      if (!collapsed) walk(kids, depth + 1);
     }
   };
-  walk(treeNodes.value, 0);
+  walk(foldSource.value, 0);
   return out;
 });
 
@@ -90,10 +206,11 @@ async function loadTree() {
   treeLoading.value = true;
   treeError.value = '';
   try {
-    treeNodes.value = await fetchChapterTree(DEFAULT_COURSE_ID);
+    const raw = await fetchChapterTree(DEFAULT_COURSE_ID);
+    treeNodes.value = Array.isArray(raw) ? raw : [];
   } catch {
     treeNodes.value = [];
-    treeError.value = '章节树加载失败（请求已发出，具体原因见上方提示），可点「重新加载」重试';
+    treeError.value = '章节目录暂时没读到，可点上方「重新加载」重试';
   } finally {
     treeLoading.value = false;
   }
@@ -280,19 +397,6 @@ function openChapterEdit(node: ChapterTreeNode) {
   drawerTitle.value = `编辑 · ${DRAWER_TITLES.chapter}`;
 }
 
-/** 章节树加载失败或该章不在树上时，用已对接的章节列表行进入同一套编辑表单（兜底入口） */
-function editChapterFromList(c: Chapter) {
-  openChapterEdit({
-    id: c.id,
-    courseId: c.courseId,
-    parentId: c.parentId,
-    chapterCode: c.chapterCode,
-    title: c.title,
-    level: c.level,
-    sortOrder: c.sortOrder,
-    children: [],
-  });
-}
 
 function openPointEdit(p: KnowledgePoint) {
   openDrawer('point', '编辑');
@@ -471,9 +575,17 @@ onMounted(() => {
         <BookOpen :size="16" class="card-icon" />
         <div>
           <h2 class="st-card__title">一、章节目录</h2>
-          <p class="st-card__hint">按「章 → 节 → 小节」维护课程结构，可新增、编辑与排序</p>
+          <p class="st-card__hint">按「章 → 节 → 小节」维护课程结构 · 默认收起，点小箭头展开或折叠该节点的下级</p>
         </div>
         <div class="block-ops">
+          <button
+            class="st-text-btn"
+            :disabled="treeLoading || chapterRows.length === 0"
+            @click="toggleAll"
+          >
+            <ChevronRight :size="12" style="vertical-align: -2px;" />
+            {{ allCollapsed ? '展开全部' : '全部折叠' }}
+          </button>
           <button class="st-text-btn" :disabled="treeLoading" @click="loadTree">
             <RefreshCw :size="12" style="vertical-align: -2px;" /> 重新加载
           </button>
@@ -487,55 +599,49 @@ onMounted(() => {
           <Loader2 :size="20" class="spin" />
           <div class="st-empty__text">正在加载章节树…</div>
         </div>
-        <div v-else-if="treeError" class="st-empty">
+        <div v-else-if="treeError && chapterRows.length === 0" class="st-empty">
           <BookOpen :size="36" :stroke-width="1.2" class="st-empty__icon" />
           <div class="st-empty__text">{{ treeError }}</div>
-          <div class="st-empty__text km-sub">章节树暂时加载失败，下表仍可直接维护</div>
         </div>
         <table v-if="!treeLoading" class="km-table">
           <thead>
             <tr>
-              <th style="width: 130px;">章节编号</th>
+              <th style="width: 220px;">章节编号</th>
               <th>标题</th>
               <th style="width: 80px;">层级</th>
               <th style="width: 80px;">排序</th>
-              <th style="width: 90px;">来源</th>
               <th style="width: 140px; text-align: right;">操作</th>
             </tr>
           </thead>
-          <tbody>
-            <tr v-for="row in treeRows" :key="`tree-${row.node.id}`">
-              <td class="mono" :style="{ paddingLeft: `${12 + row.depth * 18}px` }">{{ row.node.chapterCode }}</td>
+          <TransitionGroup :key="treeBatchKey" tag="tbody" name="km-row">
+            <tr v-for="row in chapterRows" :key="row.node.id">
+              <td class="mono" :style="{ paddingLeft: `${10 + row.depth * 18}px` }">
+                <button
+                  v-if="row.hasChildren"
+                  type="button"
+                  class="km-fold"
+                  :class="{ 'km-fold--open': !row.collapsed }"
+                  :title="row.collapsed ? '展开下级章节' : '折叠下级章节'"
+                  @click="toggleFold(row.node.id)"
+                >
+                  <ChevronRight :size="13" />
+                </button>
+                <span v-else class="km-fold km-fold--placeholder"></span>
+                {{ row.node.chapterCode }}
+              </td>
               <td>{{ row.node.title }}</td>
               <td class="muted">{{ LEVEL_LABEL[row.node.level] ?? `L${row.node.level}` }}</td>
               <td class="muted mono">{{ row.node.sortOrder }}</td>
-              <td><span class="st-badge st-badge--dark">章节树</span></td>
               <td style="text-align: right; white-space: nowrap;">
                 <button class="st-text-btn" @click="openChapterEdit(row.node)">
                   <Pencil :size="12" style="vertical-align: -2px;" /> 编辑
                 </button>
               </td>
             </tr>
-            <tr v-for="c in chapters" :key="`flat-${c.id}`">
-              <td class="mono">{{ c.chapterCode }}</td>
-              <td>{{ c.title }}</td>
-              <td class="muted">{{ LEVEL_LABEL[c.level] ?? `L${c.level}` }}</td>
-              <td class="muted mono">{{ c.sortOrder }}</td>
-              <td><span class="st-badge st-badge--neutral">章节列表</span></td>
-              <td style="text-align: right; white-space: nowrap;">
-                <button
-                  class="st-text-btn"
-                  title="编辑该章节"
-                  @click="editChapterFromList(c)"
-                >
-                  <Pencil :size="12" style="vertical-align: -2px;" /> 编辑
-                </button>
-              </td>
+            <tr v-if="chapterRows.length === 0">
+              <td colspan="5" class="muted" style="text-align: center; padding: 36px 0;">暂无章节数据</td>
             </tr>
-            <tr v-if="treeRows.length === 0 && chapters.length === 0">
-              <td colspan="6" class="muted" style="text-align: center; padding: 36px 0;">暂无章节数据</td>
-            </tr>
-          </tbody>
+          </TransitionGroup>
         </table>
       </div>
     </section>
@@ -949,6 +1055,61 @@ onMounted(() => {
   max-width: 420px;
   line-height: 1.6;
   color: var(--text-secondary);
+}
+
+/* 行过渡只服务于单节点折叠；整树展开/收起靠重建 tbody 完成，见 treeBatchKey */
+.km-row-enter-active,
+.km-row-leave-active,
+.km-row-move {
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+
+.km-row-enter-from,
+.km-row-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-row-enter-active,
+  .km-row-leave-active,
+  .km-row-move {
+    transition: none;
+  }
+}
+
+.km-fold {
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  vertical-align: -3px;
+  transition: transform var(--transition), background var(--transition), color var(--transition);
+}
+
+.km-fold svg {
+  transform: rotate(0deg);
+  transition: transform var(--transition);
+}
+
+.km-fold--open svg {
+  transform: rotate(90deg);
+}
+
+.km-fold:hover:not(.km-fold--placeholder) {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.km-fold--placeholder {
+  cursor: default;
 }
 
 .mono {

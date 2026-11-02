@@ -18,7 +18,6 @@
  */
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
 import {
   ArrowLeft,
   BookOpen,
@@ -251,13 +250,11 @@ function solveHref(id: number): string {
 
 /**
  * 进入作答：新标签页打开独立作答页（用户点击触发的 window.open，不会被拦截）。
- * 不可提交时先给一句人话，不跳空白页。
+ *
+ * 已截止也允许进入：作答页会回填已保存的草稿 / 已交内容，只是交卷按钮禁用。
+ * 不能再拿 canSubmit 当入口条件，否则学生连自己写过的东西都看不到。
  */
 function enterHomework(h: StudentHomeworkItem) {
-  if (!h.canSubmit) {
-    ElMessage.info(h.expired ? '该作业已截止，无法再提交' : '该作业当前不可提交');
-    return;
-  }
   window.open(solveHref(h.homeworkId), '_blank', 'noopener');
 }
 
@@ -496,15 +493,16 @@ onMounted(async () => {
               <div class="side-actions">
                 <button
                   class="st-btn st-btn--primary"
-                  :disabled="!selected.canSubmit"
-                  :title="selected.canSubmit ? '进入作业作答' : '当前不可提交'"
+                  :title="selected.canSubmit ? '进入作业作答' : '已截止，可回看已作答内容'"
                   @click="enterHomework(selected)"
                 >
                   <Send :size="13" />
-                  {{ selected.canSubmit ? '进入作答' : selected.expired ? '已截止' : '不可提交' }}
+                  {{ selected.canSubmit ? '进入作答' : '查看作答' }}
                 </button>
               </div>
-              <p class="side-tip">点「进入作答」会在新标签页打开作答页，可以来回切题，最后统一提交。</p>
+              <p class="side-tip">
+                点「进入作答」会在新标签页打开作答页，可以来回切题，作答会自动保存草稿。
+              </p>
             </section>
 
             <!-- 批改结果 -->

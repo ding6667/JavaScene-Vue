@@ -48,10 +48,13 @@
 - 回填由组件内部解析（字母 / 选项原文 / 分隔串 / true-false / 源码都兼容），且回填不 emit `change`——页面的草稿节流挂 `@change` 即可，不会一打开就白存一次。
 
 ## 作业作答（两套 ID 别混用）
-- 接口：`GET /api/teach/homework/student/brief?homeworkId=`（元信息 + `questionIds` 快照 ID 列表）→ 逐题 `GET /api/teach/homework/student/question?questionId=`（入参是**快照 ID**，去答案，懒加载缓存）→ `POST /api/exam/homework/submit` 整份一次提交。
+- 接口：`GET /api/teach/homework/student/brief?homeworkId=`（元信息 + `questionIds` 快照 ID 列表）→ 逐题 `GET /api/teach/homework/student/question?questionId=`（入参是**快照 ID**，去答案，懒加载缓存）→ 作答中途 `POST /api/exam/homework/draft`（草稿）→ `POST /api/exam/homework/submit`（交卷）。
 - 提交 body：`{homeworkId, answers:[{questionId, snapshotId?, answerContent}]}`。**`questionId` = 题库 ID（`exam_question.id`，取题目返回的 `questionId`），`snapshotId` = 快照 ID（题目返回的 `id`）**。拿快照 ID 当 `questionId` 提交，后端报 `code=1001`「提交的题目不属于该作业」。`questionId` 为 null 的老快照不可提交，要单独挑出来提示，别让整份提交挂掉。
 - 题目返回还带 `codeFramework`（编程题框架，发布时固化）、`requirements`（作答要求）、`hints`（阶梯提示，逐条展开、不计分）。
-- 页：`/student/homework/solve/:homeworkId`（StandaloneLayout，新标签页无侧栏）；「我的作业」用 `window.open` 进入。作业无草稿接口，答案只在作答页内存里，切换题不丢。提交后异步批改，分数看 `/api/exam/grading/result/{homeworkId}` 或「我的作业」列表。
+- **草稿/续做**：`GET /api/exam/homework/my-answers?homeworkId=` 拉回草稿+已提交用于回填（`snapshotId` 可能为 0，要按 `questionId` 暂存、等题目加载后挂到快照 ID 上）；编辑后 3s 节流 `POST /draft`，**只传变化的题**。截止不约束草稿，过期照样能存。
+- **交卷语义**：`submit` 会「本次作答转正 + 其余草稿一并转正 + 全量重批」，所以只传本次有作答的题即可。副作用：学生把某题清空后如果直接提交，旧草稿会被转正——所以本地清空且后端有记录的题必须**显式传空串**。
+- **只读**：已交卷的题 `AnswerArea` 传 `readonly`（选项/判断按钮 disabled、输入框 readonly、代码区隐藏运行与重置）。要改先点「修改作答」解锁；已交题即使解锁也不发草稿（后端会忽略），改动只在重新交卷时生效。
+- 页：`/student/homework/solve/:homeworkId`（StandaloneLayout，新标签页无侧栏）。「我的作业」用 `window.open` 进入，**不再用 canSubmit 拦入口**——已截止也要能进去回看/续写草稿，只是交卷按钮禁用。
 - 题量一律用 `questionIds.length`，`questionCount` 可能和发布时的统计不一致。
 
 ## 其他

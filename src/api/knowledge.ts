@@ -97,7 +97,6 @@ export async function queryKnowledge(keywords: string): Promise<KnowledgeSearchR
 
 /**
  * GET /api/knowledge/chapter/tree?courseId= —— 章节树（父子层级组装）
- * 后端已加 Redis 缓存（TTL 1 小时），保存章节后服务端整片失效，前端不用额外处理。
  */
 export async function fetchChapterTree(
   courseId: number = DEFAULT_COURSE_ID): Promise<ChapterTreeNode[]> {

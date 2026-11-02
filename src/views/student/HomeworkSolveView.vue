@@ -8,20 +8,23 @@
  * 已对接：
  *   GET  /api/teach/homework/student/brief      作业元信息 + 题目快照 ID 列表
  *   GET  /api/teach/homework/student/question   按快照 ID 懒加载单题（不含答案）
- *   POST /api/exam/homework/submit              整份 answers[] 一次提交
+ *   GET  /api/exam/homework/my-answers          本人该作业的全部作答（草稿 + 已提交），用于回填续做
+ *   POST /api/exam/homework/draft               保存草稿（不判卷，3s 节流，只传变化的题）
+ *   POST /api/exam/homework/submit              交卷（本次作答 + 剩余草稿一并转正，全量重批）
  *
  * ★ 两套 ID 别混用（混了就报 code=1001「题目不属于该作业」）：
  *   - 拉题干：questionId 查询参数 = **快照 ID**（teach_homework_question.id），也就是 brief.questionIds；
- *   - 提交答案：answers[].questionId = **题库 ID**（exam_question.id），取自题目返回的 questionId 字段；
- *     同时带 answers[].snapshotId = 快照 ID（可选），让错题钉在发布那一版题上。
+ *   - 草稿 / 交卷：answers[].questionId = **题库 ID**（exam_question.id），取自题目返回的 questionId；
+ *     answers[].snapshotId = 快照 ID（可选），让错题钉在发布那一版题上。
  *
  * 口径：
  *   - 题目逐题懒加载并缓存，切题不重复请求
- *   - 作业没有草稿接口，答案只留在本页内存里，离开前请一次提交完
- *   - 是否截止以 brief 的 status / deadline 为准，允许逾期时仍可提交
+ *   - 边做边存：编辑后 3s 落一次草稿，退出重进用 my-answers 回填
+ *   - 已交卷的题按只读展示；要改先点「修改作答」解锁，改完重新提交（后端会全量重批）
+ *   - 截止只约束交卷，不约束草稿：过期了还能存草稿，但提交会被拒
  *   - 老快照可能缺题库 ID（questionId 为 null），该题只能看不能交
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -33,17 +36,21 @@ import {
   Lightbulb,
   Loader2,
   ListOrdered,
+  Pencil,
   Send,
 } from 'lucide-vue-next';
 import AnswerArea from '@/components/student/AnswerArea.vue';
 import {
+  fetchMyHomeworkAnswers,
   fetchStudentHomeworkBrief,
   fetchStudentHomeworkQuestion,
+  saveHomeworkDraft,
   submitHomework,
 } from '@/api/exam';
 import type {
   AnswerAreaQuestion,
   HomeworkAnswer,
+  HomeworkAnswers,
   StudentHomeworkBrief,
   StudentHomeworkQuestion,
 } from '@/types/exam';
@@ -65,13 +72,36 @@ const questionError = ref<Record<number, string>>({});
 /** 答案：快照 ID → 规范答案串 */
 const answers = ref<Record<number, string>>({});
 
+/**
+ * 作答状态：快照 ID → 1=已交卷，0/undefined=草稿或未作答。
+ * 已交卷的题按只读渲染，要改先解锁（后端对已提交题的草稿会忽略）。
+ */
+const answerStatus = ref<Record<number, number>>({});
+
+/** 是否已经交过卷（至少有 1 题已提交） */
+const hasSubmitted = computed(() => Object.values(answerStatus.value).some((s) => s === 1));
+
+/** 解锁已交卷题目：默认 false，点「修改作答」才置 true，避免误改已交内容 */
+const editMode = ref(false);
+
+/** my-answers 给的交卷许可：null 表示后端拿不到（teach 不可用），此时按 brief 自己判断 */
+const serverCanSubmit = ref<boolean | null>(null);
+
+/**
+ * 回填时还不知道快照 ID 的作答（my-answers 的 snapshotId 可能为 0）。
+ * 按题库 ID 暂存，等这道题加载出来、拿到它的 questionId 再挂到快照 ID 上。
+ */
+const pendingByBankId = ref<Record<number, { content: string; status: number }>>({});
+
 const currentId = ref(0);
 
-/** 当前题的答案（v-model 用）：读写都落到 answers 里，切题不丢 */
+/** 当前题的答案（v-model 用）：读写都落到 answers 里，切题不丢；写入时排一次草稿保存 */
 const currentAnswer = computed({
   get: () => answers.value[currentId.value] ?? '',
   set: (value: string) => {
-    answers.value = { ...answers.value, [currentId.value]: value };
+    const id = currentId.value;
+    answers.value = { ...answers.value, [id]: value };
+    scheduleDraft(id);
   },
 });
 
@@ -100,6 +130,136 @@ const answerQuestion = computed<AnswerAreaQuestion>(() => {
 
 /** 提交用的题库 ID：快照可能缺题库 ID（老数据），此时该题不可提交 */
 const currentBankId = computed(() => currentQuestion.value?.questionId ?? null);
+
+/** 单题是否只读：已交卷且没点「修改作答」解锁 */
+function isLocked(id: number): boolean {
+  return answerStatus.value[id] === 1 && !editMode.value;
+}
+
+const currentLocked = computed(() => isLocked(currentId.value));
+
+/** 单题状态：已交卷 / 有内容（草稿） / 未作答 */
+function questionState(id: number): 'submitted' | 'draft' | 'empty' {
+  if (answerStatus.value[id] === 1) return 'submitted';
+  return isAnswered(id) ? 'draft' : 'empty';
+}
+
+function statusLabel(id: number): string {
+  const state = questionState(id);
+  if (state === 'submitted') return '已交卷';
+  return state === 'draft' ? '草稿' : '未作答';
+}
+
+// ==================== 草稿自动保存 ====================
+/**
+ * 只累积「本次变化」的题，3s 后合并成一次请求。
+ * 已交卷的题不发（后端会忽略），缺题库 ID 的题也发不出去。
+ */
+const pendingDraft = new Set<number>();
+const draftState = ref<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle');
+const draftSavedAt = ref('');
+let draftTimer: number | null = null;
+
+function formatClock(raw: string | null): string {
+  const m = String(raw ?? '').match(/(\d{2}):(\d{2})/);
+  if (m) return `${m[1]}:${m[2]}`;
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
+const draftHint = computed(() => {
+  switch (draftState.value) {
+    case 'pending':
+      return '有改动待保存';
+    case 'saving':
+      return '正在保存草稿…';
+    case 'saved':
+      return `草稿已保存 ${draftSavedAt.value}`;
+    case 'error':
+      return '草稿保存失败，下次编辑会重试';
+    default:
+      return '';
+  }
+});
+
+function scheduleDraft(snapshotId: number) {
+  if (!snapshotId) return;
+  const q = questions.value[snapshotId];
+  // 没题库 ID 存不了；已交卷的题后端会忽略草稿，改动只在重新交卷时生效
+  if (!q?.questionId || answerStatus.value[snapshotId] === 1) return;
+  pendingDraft.add(snapshotId);
+  draftState.value = 'pending';
+  if (draftTimer !== null) window.clearTimeout(draftTimer);
+  draftTimer = window.setTimeout(() => void flushDraft(), 3000);
+}
+
+/** 把后端判定「已交卷」的题库 ID 同步成本地只读态 */
+function markSubmittedByBankIds(bankIds: number[]): void {
+  if (!bankIds.length) return;
+  const next = { ...answerStatus.value };
+  for (const [rawId, q] of Object.entries(questions.value)) {
+    if (q.questionId && bankIds.includes(q.questionId)) next[Number(rawId)] = 1;
+  }
+  answerStatus.value = next;
+}
+
+async function flushDraft(): Promise<void> {
+  if (draftTimer !== null) {
+    window.clearTimeout(draftTimer);
+    draftTimer = null;
+  }
+  const b = brief.value;
+  if (!b || !pendingDraft.size) return;
+
+  const ids = [...pendingDraft];
+  pendingDraft.clear();
+
+  const payload: HomeworkAnswer[] = [];
+  for (const snapshotId of ids) {
+    const bankId = questions.value[snapshotId]?.questionId;
+    if (!bankId) continue;
+    // 空串是「清空该题」的合法语义，原样提交，别 trim 掉
+    payload.push({
+      questionId: bankId,
+      snapshotId,
+      answerContent: String(answers.value[snapshotId] ?? ''),
+    });
+  }
+  if (!payload.length) return;
+
+  draftState.value = 'saving';
+  try {
+    const res = await saveHomeworkDraft({ homeworkId: b.homeworkId, answers: payload });
+    draftSavedAt.value = formatClock(res.lastDraftTime);
+    draftState.value = 'saved';
+
+    // 后端已有这些题的行（草稿）：记成 0，后面清空时才记得显式提交空串，
+    // 否则交卷「剩余草稿一并转正」会把清空前的旧内容当成有效答案。
+    const nextStatus = { ...answerStatus.value };
+    for (const item of payload) {
+      const snapshotId = item.snapshotId as number;
+      if (nextStatus[snapshotId] !== 1) nextStatus[snapshotId] = 0;
+    }
+    answerStatus.value = nextStatus;
+
+    markSubmittedByBankIds(res.ignoredQuestionIds);
+  } catch {
+    // 失败把题放回队列，下次编辑顺带重试，不清空学生刚写的内容
+    ids.forEach((id) => pendingDraft.add(id));
+    draftState.value = 'error';
+  }
+}
+
+/** 离开前尽量把未落库的改动送出去（关标签页时请求可能被中断，属尽力而为） */
+function flushOnLeave() {
+  if (pendingDraft.size) void flushDraft();
+}
+
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (!pendingDraft.size && draftState.value !== 'saving') return;
+  e.preventDefault();
+  e.returnValue = '';
+}
 
 // ==================== 阶梯提示（逐条展开，不计分） ====================
 const hintShown = ref<Record<number, number>>({});
@@ -143,7 +303,13 @@ const expired = computed(() => {
   return Number.isFinite(at) && at < Date.now();
 });
 
-const canSubmit = computed(() => !!brief.value && (!expired.value || brief.value.allowLateSubmit === 1));
+const canSubmit = computed(() => {
+  const b = brief.value;
+  if (!b) return false;
+  const byBrief = !expired.value || b.allowLateSubmit === 1;
+  // my-answers 明确说不能交就以它为准；给 null（后端拿不到）时只看 brief
+  return byBrief && serverCanSubmit.value !== false;
+});
 
 const statusText = computed(() => {
   const b = brief.value;
@@ -183,6 +349,27 @@ function questionTitle(q: StudentHomeworkQuestion | null, fallbackId: number): s
 }
 
 // ==================== 题目加载 ====================
+/**
+ * 回填里快照 ID 缺失的作答，等题目加载出来、拿到题库 ID 后再挂上。
+ * 只在本地没有答案时写入，避免覆盖学生正在写的内容。
+ */
+function mountPendingAnswer(snapshotId: number, q: StudentHomeworkQuestion) {
+  const bankId = q.questionId ?? 0;
+  if (!bankId) return;
+  const pending = pendingByBankId.value[bankId];
+  if (!pending) return;
+
+  if (pending.content && !answers.value[snapshotId]) {
+    answers.value = { ...answers.value, [snapshotId]: pending.content };
+  }
+  if (pending.status === 1) {
+    answerStatus.value = { ...answerStatus.value, [snapshotId]: 1 };
+  }
+  const next = { ...pendingByBankId.value };
+  delete next[bankId];
+  pendingByBankId.value = next;
+}
+
 async function ensureQuestion(id: number) {
   if (!id || questions.value[id] || questionLoading.value[id]) return;
   questionLoading.value = { ...questionLoading.value, [id]: true };
@@ -190,6 +377,7 @@ async function ensureQuestion(id: number) {
   try {
     const q = await fetchStudentHomeworkQuestion(id);
     questions.value = { ...questions.value, [id]: q };
+    mountPendingAnswer(id, q);
   } catch (e) {
     questionError.value = {
       ...questionError.value,
@@ -225,13 +413,50 @@ watch(currentId, (id) => {
   if (id) void ensureQuestion(id);
 });
 
-// ==================== 加载作业 ====================
+// ==================== 加载作业 + 回填上次作答 ====================
+/**
+ * 回填：my-answers 里已出现的题直接用保存的内容，未出现的题就是没做过。
+ * 已提交（status=1）的题同步成只读态。
+ */
+function applySavedAnswers(b: StudentHomeworkBrief, saved: HomeworkAnswers): void {
+  const idSet = new Set(b.questionIds);
+  const nextAnswers = { ...answers.value };
+  const nextStatus = { ...answerStatus.value };
+  const pending: Record<number, { content: string; status: number }> = {};
+
+  for (const row of saved.answers) {
+    const content = String(row.answerContent ?? '');
+    if (row.snapshotId && idSet.has(row.snapshotId)) {
+      if (content) nextAnswers[row.snapshotId] = content;
+      nextStatus[row.snapshotId] = row.status === 1 ? 1 : 0;
+      continue;
+    }
+    // snapshotId 缺失或不在本作业里：按题库 ID 暂存，题目加载后再挂
+    if (row.questionId) pending[row.questionId] = { content, status: row.status };
+  }
+
+  answers.value = nextAnswers;
+  answerStatus.value = nextStatus;
+  pendingByBankId.value = pending;
+  serverCanSubmit.value = saved.canSubmit;
+
+  if (saved.lastDraftTime) {
+    draftSavedAt.value = formatClock(saved.lastDraftTime);
+    draftState.value = 'saved';
+  }
+}
+
 async function loadBrief() {
   loading.value = true;
   loadError.value = null;
   try {
-    const data = await fetchStudentHomeworkBrief(homeworkId.value);
+    // 作答记录拉不到不影响答题（只是没法回填），单独 catch 降级
+    const [data, saved] = await Promise.all([
+      fetchStudentHomeworkBrief(homeworkId.value),
+      fetchMyHomeworkAnswers(homeworkId.value).catch(() => null),
+    ]);
     brief.value = data;
+    if (saved) applySavedAnswers(data, saved);
     currentId.value = data.questionIds[0] ?? 0;
     if (currentId.value) await ensureQuestion(currentId.value);
   } catch (e) {
@@ -242,13 +467,34 @@ async function loadBrief() {
   }
 }
 
-onMounted(loadBrief);
+/** 切到后台 / 最小化时也落一次草稿，比只在卸载时保存可靠 */
+function onVisibilityChange() {
+  if (document.visibilityState === 'hidden') flushOnLeave();
+}
+
+onMounted(() => {
+  void loadBrief();
+  window.addEventListener('beforeunload', onBeforeUnload);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+  flushOnLeave();
+});
 
 // ==================== 提交 ====================
 const submitting = ref(false);
 const submitted = ref(false);
 const submittedAt = ref('');
 const submitError = ref<string | null>(null);
+
+/** 解锁已交卷题目：允许修改，改完需要重新提交（后端会覆盖并全量重批） */
+function unlockEditing() {
+  editMode.value = true;
+  ElMessage.info('已解锁已交卷的题目，修改后请重新提交');
+}
 
 async function handleSubmit() {
   const b = brief.value;
@@ -258,21 +504,33 @@ async function handleSubmit() {
     return;
   }
 
-  /** 已作答的题（按快照 ID 收集，答案串为空的直接丢弃） */
-  const filled = b.questionIds
-    .map((snapshotId) => ({
-      snapshotId,
-      answerContent: String(answers.value[snapshotId] ?? '').trim(),
-    }))
-    .filter((it) => it.answerContent !== '');
-
-  if (!filled.length) {
+  /**
+   * 本次要交给后端的题：
+   *   - 有内容的题全部交；
+   *   - 本地清空、但后端已经有记录的题交空串（交卷会把剩余草稿转正，
+   *     不显式清空的话旧内容会被当成有效答案提交）；
+   *   - 已交卷、这次又没解锁的题不重发（后端已存着，避免无谓覆盖）。
+   */
+  const answered = b.questionIds.filter((id) => String(answers.value[id] ?? '').trim() !== '');
+  if (!answered.length && !Object.keys(answerStatus.value).length) {
     ElMessage.warning('还没有作答任何题目');
     return;
   }
 
-  // 提交要带题库 ID，先把已作答的题补齐（正常情况下都已经缓存过，这里只是兜底）
-  await Promise.all(filled.map((it) => ensureQuestion(it.snapshotId)));
+  const toSend = b.questionIds.filter((snapshotId) => {
+    if (answerStatus.value[snapshotId] === 1 && !editMode.value) return false;
+    const content = String(answers.value[snapshotId] ?? '');
+    if (content.trim() !== '') return true;
+    return answerStatus.value[snapshotId] !== undefined;
+  });
+
+  if (!toSend.length) {
+    ElMessage.info('本次没有新的作答，无需重新提交');
+    return;
+  }
+
+  // 提交要带题库 ID，先把要提交的题补齐（正常情况下都已经缓存过，这里只是兜底）
+  await Promise.all(toSend.map((id) => ensureQuestion(id)));
 
   /**
    * ★ 提交口径：answers[].questionId 用**题库 ID**，snapshotId 用**快照 ID**。
@@ -280,16 +538,16 @@ async function handleSubmit() {
    */
   const payload: HomeworkAnswer[] = [];
   let blockedCount = 0;
-  for (const it of filled) {
-    const bankId = questions.value[it.snapshotId]?.questionId ?? 0;
+  for (const snapshotId of toSend) {
+    const bankId = questions.value[snapshotId]?.questionId ?? 0;
     if (!bankId) {
       blockedCount += 1;
       continue;
     }
     payload.push({
       questionId: bankId,
-      snapshotId: it.snapshotId,
-      answerContent: it.answerContent,
+      snapshotId,
+      answerContent: String(answers.value[snapshotId] ?? ''),
     });
   }
 
@@ -301,8 +559,8 @@ async function handleSubmit() {
     ElMessage.warning(`有 ${blockedCount} 道题缺少题目信息，本次不会提交`);
   }
 
-  const missing = b.questionIds.length - filled.length;
-  const tip = submitted.value ? '这是重新提交，新提交会覆盖上一次的作答。' : '';
+  const missing = b.questionIds.length - answered.length;
+  const tip = hasSubmitted.value ? '这是重新提交，会覆盖上一次的作答并重新批改。' : '';
   if (missing > 0) {
     try {
       await ElMessageBox.confirm(
@@ -313,9 +571,9 @@ async function handleSubmit() {
     } catch {
       return;
     }
-  } else if (submitted.value) {
+  } else if (hasSubmitted.value) {
     try {
-      await ElMessageBox.confirm('新提交会覆盖上一次的作答，确认重新提交？', '重新提交', {
+      await ElMessageBox.confirm('新提交会覆盖上一次的作答并重新批改，确认重新提交？', '重新提交', {
         confirmButtonText: '确认提交',
         cancelButtonText: '取消',
         type: 'warning',
@@ -331,7 +589,20 @@ async function handleSubmit() {
     await submitHomework({ homeworkId: b.homeworkId, answers: payload });
     submitted.value = true;
     submittedAt.value = new Date().toLocaleString();
-    // 提交后由后端异步批改，分数在「我的作业」里看
+
+    // 交卷会把这批题置为已提交、其余草稿一并转正 → 本地全部同步成只读
+    const nextStatus = { ...answerStatus.value };
+    for (const item of payload) nextStatus[item.snapshotId as number] = 1;
+    answerStatus.value = nextStatus;
+    editMode.value = false;
+    pendingDraft.clear();
+    if (draftTimer !== null) {
+      window.clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    draftState.value = 'idle';
+    draftSavedAt.value = '';
+
     ElMessage.success('作业已提交，批改完成后可在「我的作业」查看得分');
   } catch (e) {
     submitError.value = `提交失败：${(e as Error)?.message ?? '未知错误'}`;
@@ -367,7 +638,21 @@ function goBack() {
         </p>
       </div>
       <div class="hw-topbar__actions">
+        <span
+          v-if="draftHint"
+          class="progress-pill"
+          :class="{ 'progress-pill--warn': draftState === 'error' }"
+        >
+          {{ draftHint }}
+        </span>
         <span class="progress-pill">{{ answeredCount }} / {{ questionIds.length }} 题已答</span>
+        <button
+          v-if="hasSubmitted && !editMode"
+          class="st-btn st-btn--secondary"
+          @click="unlockEditing"
+        >
+          <Pencil :size="13" /> 修改作答
+        </button>
         <button
           class="st-btn st-btn--primary"
           :disabled="!brief || submitting || !canSubmit"
@@ -375,7 +660,7 @@ function goBack() {
         >
           <Loader2 v-if="submitting" :size="14" class="spin" />
           <Send v-else :size="13" />
-          {{ submitting ? '提交中…' : submitted ? '重新提交' : '提交作业' }}
+          {{ submitting ? '提交中…' : hasSubmitted ? '重新提交' : '提交作业' }}
         </button>
       </div>
     </header>
@@ -448,8 +733,10 @@ function goBack() {
                 class="nav-btn"
                 :class="{
                   'nav-btn--active': id === currentId,
-                  'nav-btn--answered': isAnswered(id),
+                  'nav-btn--answered': questionState(id) === 'draft',
+                  'nav-btn--submitted': questionState(id) === 'submitted',
                 }"
+                :title="statusLabel(id)"
                 @click="goQuestion(id)"
               >
                 {{ i + 1 }}
@@ -478,9 +765,13 @@ function goBack() {
           </div>
           <span
             class="st-badge"
-            :class="isAnswered(currentId) ? 'st-badge--success' : 'st-badge--neutral'"
+            :class="{
+              'st-badge--success': questionState(currentId) === 'submitted',
+              'st-badge--warning': questionState(currentId) === 'draft',
+              'st-badge--neutral': questionState(currentId) === 'empty',
+            }"
           >
-            {{ isAnswered(currentId) ? '已作答' : '未作答' }}
+            {{ statusLabel(currentId) }}
           </span>
         </div>
 
@@ -512,10 +803,20 @@ function goBack() {
               这道题暂不支持在线提交，可以先写在纸上，提交后与老师沟通补交。
             </div>
 
+            <div v-if="currentLocked" class="q-note q-note--muted">
+              <CircleCheck :size="13" />
+              这道题已交卷，内容只读。需要修改请点右上角「修改作答」。
+            </div>
+            <div v-else-if="editMode && answerStatus[currentId] === 1" class="q-note q-note--muted">
+              <Pencil :size="13" />
+              已进入修改模式：已交卷题目的改动不会另存草稿，改完请点「重新提交」。
+            </div>
+
             <AnswerArea
               :key="currentQuestion.id"
               v-model="currentAnswer"
               :question="answerQuestion"
+              :readonly="currentLocked"
               :show-code-tools="!!currentBankId"
               :run-question-id="currentBankId"
               :chapter-id="brief.chapterId || undefined"
@@ -550,7 +851,7 @@ function goBack() {
               <button class="st-btn st-btn--secondary" :disabled="currentIndex <= 0" @click="goStep(-1)">
                 上一题
               </button>
-              <span class="step-hint">切题不会丢答案，最后统一提交</span>
+              <span class="step-hint">切题不会丢答案，作答会自动保存草稿</span>
               <button
                 class="st-btn st-btn--secondary"
                 :disabled="currentIndex >= questionIds.length - 1"
@@ -629,6 +930,12 @@ function goBack() {
   border-radius: 999px;
   padding: 3px 10px;
   white-space: nowrap;
+}
+
+.progress-pill--warn {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: var(--status-warning-bg, #fffbeb);
+  color: var(--status-warning, #b45309);
 }
 
 .hw-loading {
@@ -848,6 +1155,14 @@ function goBack() {
   font-weight: 600;
 }
 
+/* 已交卷的题：绿底，和「草稿」区分开 */
+.nav-btn--submitted {
+  border-color: rgba(21, 128, 61, 0.32);
+  background: var(--status-success-bg, #f0fdf4);
+  color: var(--status-success, #15803d);
+  font-weight: 600;
+}
+
 .nav-btn--active {
   border-color: var(--accent, #1f2937);
   color: #fff;
@@ -957,6 +1272,16 @@ function goBack() {
   color: var(--status-warning, #b45309);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.q-note--muted {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
 }
 
 .q-note__head {

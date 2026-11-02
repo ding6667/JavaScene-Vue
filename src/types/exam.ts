@@ -314,6 +314,60 @@ export interface HomeworkSubmitRequest {
   answers: HomeworkAnswer[];
 }
 
+/** POST /api/exam/homework/draft 请求体（只传本次变化的题，前端 3s 节流） */
+export interface HomeworkDraftRequest {
+  homeworkId: number;
+  answers: HomeworkAnswer[];
+}
+
+/** POST /api/exam/homework/draft 返回 */
+export interface HomeworkDraftResult {
+  homeworkId: number;
+  /** 当前草稿题数（内容非空） */
+  draftQuestionCount: number;
+  lastDraftTime: string | null;
+  /** 已经是已提交状态、本次被忽略的题库题目 ID */
+  ignoredQuestionIds: number[];
+}
+
+/**
+ * GET /api/exam/homework/my-answers 单条作答记录
+ * questionId 是题库 ID，snapshotId 是快照 ID（0 表示未记录）。
+ */
+export interface HomeworkAnswerRecord {
+  /** 题库题目 ID（exam_question.id） */
+  questionId: number;
+  /** 作业题目快照 ID；0 表示未记录，交卷时后端按题库当前版本归档 */
+  snapshotId: number;
+  /** 已保存的作答；null / 空串表示没有有效作答 */
+  answerContent: string;
+  /** 0=草稿 1=已提交 */
+  status: number;
+  statusName: string;
+  submitTime: string | null;
+  updateTime: string | null;
+}
+
+/**
+ * GET /api/exam/homework/my-answers 返回（草稿 + 已提交）
+ * 未出现在 answers 里的题，用 brief.questionIds 做差集即可。
+ */
+export interface HomeworkAnswers {
+  homeworkId: number;
+  /** 作业题目总数；teach 不可用时为 null */
+  totalQuestionCount: number | null;
+  submittedQuestionCount: number;
+  draftQuestionCount: number;
+  answeredQuestionCount: number;
+  lastSubmitTime: string | null;
+  lastDraftTime: string | null;
+  /** 是否已过截止；teach 不可用时为 null */
+  expired: boolean | null;
+  /** 当前是否仍可交卷；null 表示后端拿不到，按 brief 自己判断 */
+  canSubmit: boolean | null;
+  answers: HomeworkAnswerRecord[];
+}
+
 /** GET /api/exam/grading/result/{homeworkId} 的单题明细 */
 export interface GradingScoreDetail {
   questionId: number;

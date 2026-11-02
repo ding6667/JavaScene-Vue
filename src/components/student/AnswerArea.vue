@@ -37,6 +37,11 @@ const props = withDefaults(
   defineProps<{
     question: AnswerAreaQuestion;
     modelValue: string;
+    /**
+     * 只读：这道题已经交卷，只展示已作答内容，不允许再改。
+     * 所有控件退化为 disabled / readonly，代码区隐藏运行与重置入口。
+     */
+    readonly?: boolean;
     /** 是否显示「运行代码 / 智能纠错」，需要 runQuestionId 才生效 */
     showCodeTools?: boolean;
     /** 题库题目 ID：运行与纠错都按它调后端 */
@@ -47,6 +52,7 @@ const props = withDefaults(
     codeTip?: string;
   }>(),
   {
+    readonly: false,
     showCodeTools: false,
     runQuestionId: null,
     chapterId: undefined,
@@ -189,6 +195,7 @@ watch(blankTotal, (n) => {
 
 // ==================== 交互 ====================
 function toggleChoice(key: string) {
+  if (props.readonly) return;
   if (isMultiple.value) {
     const set = new Set(selected.value);
     if (set.has(key)) set.delete(key);
@@ -213,6 +220,7 @@ function onTextInput(e: Event) {
 }
 
 function pickJudge(value: 'true' | 'false') {
+  if (props.readonly) return;
   judge.value = value;
   commit();
 }
@@ -325,6 +333,7 @@ function resetToFramework() {
           type="button"
           class="option-item"
           :class="{ 'option-item--selected': selected.includes(optionKey(i)) }"
+          :disabled="readonly"
           @click="toggleChoice(optionKey(i))"
         >
           <span class="option-item__mark" :class="{ 'option-item__mark--multi': isMultiple }">
@@ -348,6 +357,7 @@ function resetToFramework() {
             class="blank-item__input"
             :value="blanks[i]"
             type="text"
+            :readonly="readonly"
             :placeholder="`输入第 ${i + 1} 空答案`"
             @input="onBlankInput(i, $event)"
           />
@@ -363,6 +373,7 @@ function resetToFramework() {
           type="button"
           class="judge-btn"
           :class="{ 'judge-btn--active': judge === 'true' }"
+          :disabled="readonly"
           @click="pickJudge('true')"
         >
           <CircleCheck :size="16" /> 正确
@@ -371,6 +382,7 @@ function resetToFramework() {
           type="button"
           class="judge-btn judge-btn--bad"
           :class="{ 'judge-btn--active': judge === 'false' }"
+          :disabled="readonly"
           @click="pickJudge('false')"
         >
           <CircleX :size="16" /> 错误
@@ -388,6 +400,7 @@ function resetToFramework() {
         :value="text"
         class="text-answer__input"
         rows="10"
+        :readonly="readonly"
         placeholder="输入你的答案…"
         @input="onTextInput"
       ></textarea>
@@ -398,13 +411,13 @@ function resetToFramework() {
       <div class="block-head">
         Java 代码作答
         <span class="zone-tip">
-          <button type="button" class="st-text-btn" @click="resetToFramework">
+          <button v-if="!readonly" type="button" class="st-text-btn" @click="resetToFramework">
             <RotateCcw :size="11" style="margin-right: 2px;" /> 重置为框架代码
           </button>
         </span>
       </div>
 
-      <div v-if="toolsEnabled" class="code-toolbar">
+      <div v-if="toolsEnabled && !readonly" class="code-toolbar">
         <button class="st-btn st-btn--secondary" :disabled="running || !code.trim()" @click="handleRun">
           <Loader2 v-if="running" :size="14" class="spin" />
           <Play v-else :size="13" />
@@ -428,6 +441,7 @@ function resetToFramework() {
         :model-value="code"
         :error-lines="errorLines"
         :height="editorHeight"
+        :read-only="readonly"
         @update:model-value="onCodeInput"
       />
 
@@ -524,8 +538,18 @@ function resetToFramework() {
   transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
 }
 
-.option-item:hover {
+.option-item:hover:not(:disabled) {
   border-color: var(--border-strong, rgba(87, 83, 78, 0.35));
+}
+
+/* 只读（已交卷的题）：保留已选中的强调，其余退成静态展示 */
+.option-item:disabled {
+  cursor: default;
+  background: #fcfcfb;
+}
+
+.option-item--selected:disabled {
+  background: var(--bg-subtle);
 }
 
 .option-item--selected {
@@ -593,6 +617,13 @@ function resetToFramework() {
   border-color: var(--accent, #1f2937);
 }
 
+.blank-item__input[readonly],
+.text-answer__input[readonly] {
+  background: #fcfcfb;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
 /* 判断 */
 .judge-row {
   display: flex;
@@ -617,6 +648,19 @@ function resetToFramework() {
   border-color: var(--status-success);
   color: var(--status-success);
   background: var(--status-success-bg, #f0fdf4);
+}
+
+.judge-btn:disabled {
+  cursor: default;
+  background: #fcfcfb;
+}
+
+.judge-btn--active:disabled {
+  background: var(--status-success-bg, #f0fdf4);
+}
+
+.judge-btn--bad.judge-btn--active:disabled {
+  background: var(--status-danger-bg);
 }
 
 .judge-btn--bad.judge-btn--active {
